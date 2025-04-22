@@ -1,5 +1,6 @@
 [package]
 name = "uwd"
+version = "0.1.0"
 edition = "2021"
 description = "Call Stack Spoofing for Rust"
 license = "MIT"
@@ -23,14 +24,6 @@ obfstr = "0.4.4"
 [build-dependencies]
 cc = "1.2.19"
 nasm-rs = "0.3.0"
-
-[profile.dev]
-debug-assertions = false
-strip = true
-
-[profile.release]
-debug-assertions = false
-strip = true
 
 [package.metadata.docs.rs]
 default-target = "x86_64-pc-windows-msvc"
