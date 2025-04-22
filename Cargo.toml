@@ -1,0 +1,40 @@
+[package]
+name = "uwd"
+edition = "2021"
+description = "Call Stack Spoofing for Rust"
+license = "MIT"
+repository = "https://github.com/joaoviictorti/uwd"
+homepage = "https://github.com/joaoviictorti/uwd"
+readme = "README.md"
+build = "build.rs"
+keywords = ["spoofing", "stack", "windows", "rust", "redteam"]
+categories = ["os", "security"]
+exclude = [
+    ".gitignore",
+    "target/",
+    "tests/",
+]
+
+[dependencies]
+bitfield = "0.19.0"
+dinvk = "0.1.4"
+obfstr = "0.4.4"
+
+[build-dependencies]
+cc = "1.2.19"
+nasm-rs = "0.3.0"
+
+[profile.dev]
+debug-assertions = false
+strip = true
+
+[profile.release]
+debug-assertions = false
+strip = true
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = [
+    "x86_64-pc-windows-gnu",
+    "x86_64-pc-windows-msvc",
+]
