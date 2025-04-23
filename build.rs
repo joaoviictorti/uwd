@@ -21,22 +21,17 @@ fn main() {
             "src/asm/gnu/desync.asm",
             "src/asm/gnu/synthetic.asm",
         ];
-
-        if let Err(e) = nasm_rs::compile_library("desync", &sources) {
-            panic!("Failed to compile with NASM [desync]: {}", e);
+        
+        if let Err(e) = nasm_rs::compile_library("spoof", &sources) {
+            panic!("Failed to compile with NASM [spoof]: {}", e);
         }
-
-        if let Err(e) = nasm_rs::compile_library("synthetic", &sources) {
-            panic!("Failed to compile with NASM [synthetic]: {}", e);
-        }
-
+        
         for source in &sources {
             println!("cargo:rerun-if-changed={}", source);
         }
-
+        
         println!("cargo:rustc-link-search=native={}", out_dir);
-        println!("cargo:rustc-link-lib=static=desync");
-        println!("cargo:rustc-link-lib=static=synthetic");
+        println!("cargo:rustc-link-lib=static=spoof");
     } else {
         panic!("Unsupported target: {}", target);
     }
