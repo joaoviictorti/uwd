@@ -1,6 +1,11 @@
 use std::env;
 
 fn main() {
+    if std::env::var("DOCS_RS").is_ok() {
+        println!("cargo:warning=Skipping ASM build for docs.rs");
+        return;
+    }
+
     let target = env::var("TARGET").expect("Missing TARGET environment variable");
     let out_dir = env::var("OUT_DIR").expect("Missing OUT_DIR environment variable");
 
