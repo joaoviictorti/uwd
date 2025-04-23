@@ -289,8 +289,8 @@ impl Uwd {
         // Preparing addresses to use as artificial frames to emulate thread stack initialization
         let ntdll = dinvk::get_ntdll_address();
         let kernel32 = GetModuleHandle(s!("kernel32.dll"), None);
-        let rlt_user_addr = GetProcAddress(ntdll, "RtlUserThreadStart", None);
-        let base_thread_addr = GetProcAddress(kernel32, "BaseThreadInitThunk", None);
+        let rlt_user_addr = GetProcAddress(ntdll, s!("RtlUserThreadStart"), None);
+        let base_thread_addr = GetProcAddress(kernel32, s!("BaseThreadInitThunk"), None);
         config.rtl_user_addr = rlt_user_addr;
         config.base_thread_addr = base_thread_addr;
 
