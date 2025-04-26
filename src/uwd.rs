@@ -118,20 +118,20 @@ macro_rules! syscall_synthetic {
 /// Trait that allows casting any type to a raw pointer (`*const c_void` or `*mut c_void`).
 pub trait AsUwd {
     /// Casts an immutable reference to a `*const c_void`.
-    fn cast_const(&self) -> *const c_void;
+    fn as_uwd_const(&self) -> *const c_void;
 
     /// Casts a mutable reference to a `*mut c_void`.
-    fn cast_mut(&mut self) -> *mut c_void;
+    fn as_uwd_mut(&mut self) -> *mut c_void;
 }
 
 impl<T> AsUwd for T {
     #[inline(always)]
-    fn cast_const(&self) -> *const c_void {
+    fn as_uwd_const(&self) -> *const c_void {
         self as *const _ as *const c_void
     }
 
     #[inline(always)]
-    fn cast_mut(&mut self) -> *mut c_void {
+    fn as_uwd_mut(&mut self) -> *mut c_void {
         self as *mut _ as *mut c_void
     }
 }
