@@ -1,7 +1,7 @@
 use std::env;
 
 fn main() {
-    if std::env::var("DOCS_RS").is_ok() {
+    if env::var("DOCS_RS").is_ok() {
         println!("cargo:warning=Skipping ASM build for docs.rs");
         return;
     }
