@@ -9,9 +9,6 @@ pub enum SpoofError {
     /// Null address provided for a function call when one was expected.
     NullFunctionAddress,
 
-    /// Failed to get a handle to `kernelbase.dll`.
-    KernelbaseNotFound,
-
     /// Failed to locate the exception directory within `kernelbase.dll`.
     RuntimeAddressNotFound,
 
@@ -32,15 +29,6 @@ pub enum SpoofError {
 
     /// Failed to get a handle to `ntdll.dll`.
     NtdllNotFound,
-
-    /// Failed to get a handle to `kernel32.dll`.
-    Kernel32NotFound,
-
-    /// Failed to locate `RtlUserThreadStart` within `ntdll.dll`.
-    RtlUserThreadStartNotFound,
-
-    /// Failed to locate `BaseThreadInitThunk` within `kernel32.dll`.
-    BaseThreadInitThunkNotFound,
 
     /// Failed to find the runtime function structure for `RtlUserThreadStart`.
     RtlUserRuntimeNotFound,

@@ -192,10 +192,7 @@ impl Uwd {
 
         // Get the base address of kernelbase.dll
         let kernelbase = GetModuleHandle(s!("kernelbase.dll"), None);
-        if kernelbase.is_null() {
-            return Err(anyhow!(KernelbaseNotFound));
-        }
-
+        
         // Extract the exception directory.
         let (runtime_table, runtime_size) = get_exception_addr(kernelbase).ok_or(anyhow!(RuntimeAddressNotFound))?;
 
@@ -310,9 +307,6 @@ impl Uwd {
 
         // Get the base address of kernelbase.dll
         let kernelbase = GetModuleHandle(s!("kernelbase.dll"), None);
-        if kernelbase.is_null() {
-            return Err(anyhow!(KernelbaseNotFound));
-        }
 
         // Extract the exception directory.
         let (runtime_table, runtime_size) = get_exception_addr(kernelbase).ok_or(anyhow!(RuntimeAddressNotFound))?;
@@ -327,20 +321,8 @@ impl Uwd {
         }
         
         let kernel32 = GetModuleHandle(s!("kernel32.dll"), None);
-        if kernel32.is_null() {
-            return Err(anyhow!(Kernel32NotFound));
-        }
-        
         let rlt_user_addr = GetProcAddress(ntdll, s!("RtlUserThreadStart"), None);
-        if rlt_user_addr.is_null() {
-            return Err(anyhow!(RtlUserThreadStartNotFound));
-        }
-        
         let base_thread_addr = GetProcAddress(kernel32, s!("BaseThreadInitThunk"), None);
-        if base_thread_addr.is_null() {
-            return Err(anyhow!(BaseThreadInitThunkNotFound));
-        }
-        
         config.rtl_user_addr = rlt_user_addr;
         config.base_thread_addr = base_thread_addr;
 
