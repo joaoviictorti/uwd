@@ -10,14 +10,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Execute command with `WinExec`
     // Call Stack Spoofing (Desync)
     let cmd = c"calc.exe";
-    spoof!(win_exec, cmd.as_ptr(), 1)
-        .filter(|&ptr| !ptr.is_null())
-        .ok_or("WinExec Failed")?;
+    let mut result = spoof!(win_exec, cmd.as_ptr(), 1)?;
+    if result.is_null() {
+        eprintln!("WinExec Failed");
+        return Ok(());
+    }
 
     // Call Stack Spoofing (Synthetic)
-    spoof_synthetic!(win_exec, cmd.as_ptr(), 1)
-        .filter(|&ptr| !ptr.is_null())
-        .ok_or("WinExec Failed")?;
+    result = spoof_synthetic!(win_exec, cmd.as_ptr(), 1)?;
+    if result.is_null() {
+        eprintln!("WinExec Failed [2]");
+        return Ok(());
+    }
 
     Ok(())
 }
