@@ -3,7 +3,15 @@
 
 extern crate alloc;
 
+/// Internal structures and types for spoof configuration.
 mod data;
-mod uwd;
+
+/// Helper functions used internally.
 mod utils;
+
+/// Custom error types used across the crate.
+pub mod error;
+
+// Core logic implementing spoofing routines.
+mod uwd;
 pub use uwd::*;
