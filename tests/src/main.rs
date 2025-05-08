@@ -10,8 +10,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     // Execute command with `WinExec`
     let cmd = c"calc.exe";
 
-    // 0:000> x kernel32!WinExec
-    // 0:000> bp <addr> "k ; g"
+    // 0:000> bp kernel32!WinExec "k ; g"
     for _ in 0..50 {
         spoof!(win_exec, cmd.as_ptr(), 1)?;
     }
