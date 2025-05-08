@@ -1,6 +1,6 @@
 use obfstr::{obfbytes as b, obfstring as s};
+use anyhow::{Result, anyhow};
 use alloc::{vec::Vec, string::String};
-use alloc::borrow::Cow;
 use core::{ffi::c_void, slice::from_raw_parts};
 use dinvk::{
     GetModuleHandle, GetProcAddress, 
@@ -25,9 +25,6 @@ unsafe extern "C" {
     fn SpoofSynthetic(config: &mut Config) -> *mut c_void;
 }
 
-/// Type of error
-type Result<T> = core::result::Result<T, Cow<'static, str>>;
-
 /// Invokes the [`Uwd::spoof`] function with the target function address, using a desynchronized call stack.
 /// 
 /// # Arguments
@@ -40,12 +37,8 @@ macro_rules! spoof {
         unsafe {
             $crate::Uwd::spoof(
                 $addr,
-                vec![
-                    $(
-                        ::core::mem::transmute($arg as usize)
-                    ),*
-                ],
-                $crate::SpoofKind::Function
+                &[$(::core::mem::transmute($arg as usize)),*],
+                $crate::SpoofKind::Function,
             )
         }
     };
@@ -63,11 +56,7 @@ macro_rules! syscall {
         unsafe {
             $crate::Uwd::spoof(
                 null_mut(),
-                vec![
-                    $(
-                        ::core::mem::transmute($arg as usize)
-                    ),*
-                ],
+                &[$(::core::mem::transmute($arg as usize)),*],
                 $crate::SpoofKind::Syscall($name)
             )
         }
@@ -86,12 +75,8 @@ macro_rules! spoof_synthetic {
         unsafe {
             $crate::Uwd::spoof_synthetic(
                 $addr,
-                vec![
-                    $(
-                        ::core::mem::transmute($arg as usize)
-                    ),*
-                ],
-                $crate::SpoofKind::Function
+                &[$(::core::mem::transmute($arg as usize)),*],
+                $crate::SpoofKind::Function,
             )
         }
     };
@@ -109,11 +94,7 @@ macro_rules! syscall_synthetic {
         unsafe {
             $crate::Uwd::spoof_synthetic(
                 null_mut(),
-                vec![
-                    $(
-                        ::core::mem::transmute($arg as usize)
-                    ),*
-                ],
+                &[$(::core::mem::transmute($arg as usize)),*],
                 $crate::SpoofKind::Syscall($name)
             )
         }
@@ -153,17 +134,17 @@ impl Uwd {
     /// # Returns
     /// 
     /// * `Ok(*mut c_void)` — On success, returns the result of the spoofed function or syscall.
-    /// * `Err(SpoofError)` — If any required setup step fails (e.g., gadgets missing, invalid arguments).
-    pub fn spoof(addr: *mut c_void, args: Vec<*const c_void>, kind: SpoofKind) -> Result<*mut c_void> {
+    /// * `Err(anyhow::Error)` — If any required setup step fails (e.g., gadgets missing, invalid arguments).
+    pub fn spoof(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
         // Max 11 arguments allowed
         if args.len() > 11 {
-            return Err(s!("Too many arguments").into());
+            return Err(anyhow!(s!("Too many arguments")));
         }
 
         // Prevent calling a null function unless it's a syscall
         if let SpoofKind::Function = kind {
             if addr.is_null() {
-                return Err(s!("Null function address").into());
+                return Err(anyhow!(s!("Null function address")));
             }
         }
 
@@ -174,32 +155,32 @@ impl Uwd {
         let kernelbase = GetModuleHandle(2737729883u32, Some(murmur3));
         
         // Extract the exception directory.
-        let (runtime_table, runtime_size) = get_exception_addr(kernelbase).ok_or(s!("Runtime Address Not Found"))?;
+        let (runtime_table, runtime_size) = get_exception_addr(kernelbase).ok_or(anyhow!(s!("Runtime Address Not Found")))?;
 
         // Locate a return address from BaseThreadInitThunk on the current stack.
-        config.return_address = Self::find_base_thread_return_address().ok_or(s!("Return address not found"))? as *const c_void;
+        config.return_address = Self::find_base_thread_return_address().ok_or(anyhow!(s!("Return address not found")))? as *const c_void;
 
         // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices.
         let tables = unsafe { from_raw_parts(runtime_table, runtime_size as usize / size_of::<IMAGE_RUNTIME_FUNCTION>()) };
         
         // First frame: a normal function with a clean prologue 
-        let first_prolog = Self::find_prolog(kernelbase, tables).ok_or(s!("First prolog not found"))?;
+        let first_prolog = Self::find_prolog(kernelbase, tables).ok_or(anyhow!(s!("First prolog not found")))?;
         config.first_frame_fp = (first_prolog.frame + first_prolog.offset as u64) as *const c_void;
         config.first_frame_size = first_prolog.stack_size as u64;
 
         // Second frame: looks specifically for a prologue with `push rbp`.
-        let second_prolog = Self::find_push_rbp(kernelbase, tables).ok_or(s!("Second prolog not found"))?;
+        let second_prolog = Self::find_push_rbp(kernelbase, tables).ok_or(anyhow!(s!("Second prolog not found")))?;
         config.second_frame_fp = (second_prolog.frame + second_prolog.offset as u64) as *const c_void;
         config.second_frame_size = second_prolog.stack_size as u64;
         config.rbp_stack_offset = second_prolog.rbp_offset as u64;
 
         // Find a gadget `add rsp, 0x58; ret`.
-        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables).ok_or(s!("Add RSP gadget not found"))?;
+        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables).ok_or(anyhow!(s!("Add RSP gadget not foun)d")))?;
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
         // Find a gadget that performs `jmp rbx` - to restore the original call.
-        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables).ok_or(s!("JMP RBX gadget not found"))?;
+        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables).ok_or(anyhow!(s!("JMP RBX gadget not foun)d")))?;
         config.jmp_rbx_gadget = jmp_rbx_addr as *const c_void;
         config.jmp_rbx_frame_size = size as u64;
 
@@ -230,25 +211,24 @@ impl Uwd {
                 // Retrieves the ntdll address
                 let ntdll = GetModuleHandle(2788516083u32, Some(murmur3));
                 if ntdll.is_null() {
-                    return Err(s!("ntdll.dll not found").into());
+                    return Err(anyhow!(s!("ntdll.dll not found")));
                 }
 
                 // Retrieves the address of the function
                 let addr = GetProcAddress(ntdll, name, None);
                 if addr.is_null() {
-                    return Err(s!("GetProcAddress returned null").into());
+                    return Err(anyhow!(s!("GetProcAddress returned null")));
                 }
 
                 // Configures the parameters to be sent to execute the syscall indirectly
                 config.is_syscall = true as u32;
-                config.ssn = dinvk::ssn(name, ntdll).ok_or(s!("SSN not found"))?;
-                config.spoof_function = dinvk::get_syscall_address(addr).ok_or(s!("Syscall address not found"))? as *const c_void;
+                config.ssn = dinvk::ssn(name, ntdll).ok_or(anyhow!(s!("SSN not found")))?;
+                config.spoof_function = dinvk::get_syscall_address(addr).ok_or(anyhow!(s!("Syscall address not found")))? as *const c_void;
             }
         }
 
         // Call the external spoofing routine with the full config.
-        let result = unsafe { Spoof(&mut config) };
-        Ok(result)
+        Ok(unsafe { Spoof(&mut config) })
     }
 
     /// Performs call stack spoofing in `synthetic` mode, simulating a fake stack from scratch.
@@ -264,17 +244,17 @@ impl Uwd {
     /// # Returns
     ///
     /// * `Ok(*mut c_void)` — On success, returns the result of the spoofed function or syscall.
-    /// * `Err(SpoofError)` — If any required setup step fails (e.g., gadgets missing, invalid arguments).
-    pub fn spoof_synthetic(addr: *mut c_void, args: Vec<*const c_void>, kind: SpoofKind) -> Result<*mut c_void> {
+    /// * `Err(anyhow::Error)` — If any required setup step fails (e.g., gadgets missing, invalid arguments).
+    pub fn spoof_synthetic(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
         // Max 11 arguments allowed
         if args.len() > 11 {
-            return Err(s!("Too many arguments").into());
+            return Err(anyhow!(s!("Too many arguments")));
         }
 
         // Prevent calling a null function unless it's a syscall
         if let SpoofKind::Function = kind {
             if addr.is_null() {
-                return Err(s!("Null function address").into());
+                return Err(anyhow!(s!("Null function address")));
             }
         }
 
@@ -285,7 +265,7 @@ impl Uwd {
         let kernelbase = GetModuleHandle(2737729883u32, Some(murmur3));
 
         // Extract the exception directory.
-        let (runtime_table, runtime_size) = get_exception_addr(kernelbase).ok_or(s!("Runtime Address Not Found"))?;
+        let (runtime_table, runtime_size) = get_exception_addr(kernelbase).ok_or(anyhow!(s!("Runtime Address Not Found")))?;
 
         // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices.
         let tables = unsafe { from_raw_parts(runtime_table, runtime_size as usize / size_of::<IMAGE_RUNTIME_FUNCTION>()) };
@@ -293,7 +273,7 @@ impl Uwd {
         // Preparing addresses to use as artificial frames to emulate thread stack initialization
         let ntdll = GetModuleHandle(2788516083u32, Some(murmur3));
         if ntdll.is_null() {
-            return Err(s!("ntdll.dll not found").into());
+            return Err(anyhow!(s!("ntdll.dll not found")));
         }
         
         let kernel32 = GetModuleHandle(2808682670u32, Some(murmur3));
@@ -304,35 +284,35 @@ impl Uwd {
 
         // Recovering the IMAGE_RUNTIME_FUNCTION structure of target apis
         let rtl_user_runtime = find_runtime_function(ntdll, (rlt_user_addr as usize - ntdll as usize) as u32)
-            .ok_or(s!("RtlUserThreadStart unwind info not found"))?;
+            .ok_or(anyhow!(s!("RtlUserThreadStart unwind info not found")))?;
         
         let base_thread_runtime = find_runtime_function(kernel32, (base_thread_addr as usize - kernel32 as usize) as u32)
-            .ok_or(s!("BaseThreadInitThunk unwind info not found"))?;
+            .ok_or(anyhow!(s!("BaseThreadInitThunk unwind info not found")))?;
 
         // Recovering the stack size of target apis
-        let rtl_user_size = StackFrame::ignoring_set_fpreg(ntdll, rtl_user_runtime).ok_or(s!("RtlUserThreadStart stack size not found"))?;
-        let base_thread_size = StackFrame::ignoring_set_fpreg(kernel32, base_thread_runtime).ok_or(s!("BaseThreadInitThunk stack size not found"))?;
+        let rtl_user_size = StackFrame::ignoring_set_fpreg(ntdll, rtl_user_runtime).ok_or(anyhow!(s!("RtlUserThreadStart stack size not found")))?;
+        let base_thread_size = StackFrame::ignoring_set_fpreg(kernel32, base_thread_runtime).ok_or(anyhow!(s!("BaseThreadInitThunk stack size not found")))?;
         config.rtl_user_thread_size = rtl_user_size as u64;
         config.base_thread_size = base_thread_size as u64;
 
         // First frame: a normal function with a clean prologue 
-        let first_prolog = Self::find_prolog(kernelbase, tables).ok_or(s!("First prolog not found"))?;
+        let first_prolog = Self::find_prolog(kernelbase, tables).ok_or(anyhow!(s!("First prolog not found")))?;
         config.first_frame_fp = (first_prolog.frame + first_prolog.offset as u64) as *const c_void;
         config.first_frame_size = first_prolog.stack_size as u64;
 
         // Second frame: looks specifically for a prologue with `push rbp`.
-        let second_prolog = Self::find_push_rbp(kernelbase, tables).ok_or(s!("Second prolog not found"))?;
+        let second_prolog = Self::find_push_rbp(kernelbase, tables).ok_or(anyhow!(s!("Second prolog not found")))?;
         config.second_frame_fp = (second_prolog.frame + second_prolog.offset as u64) as *const c_void;
         config.second_frame_size = second_prolog.stack_size as u64;
         config.rbp_stack_offset = second_prolog.rbp_offset as u64;
 
         // Find a gadget `add rsp, 0x58; ret`.
-        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables).ok_or(s!("Add RSP gadget not found"))?;
+        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables).ok_or(anyhow!(s!("Add RSP gadget not found")))?;
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
         // Find a gadget that performs `jmp rbx` - to restore the original call.
-        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables).ok_or(s!("JMP RBX gadget not found"))?;
+        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables).ok_or(anyhow!(s!("JMP RBX gadget not found")))?;
         config.jmp_rbx_gadget = jmp_rbx_addr as *const c_void;
         config.jmp_rbx_frame_size = size as u64;
 
@@ -363,19 +343,18 @@ impl Uwd {
                 // Retrieves the address of the function
                 let addr = GetProcAddress(ntdll, name, None);
                 if addr.is_null() {
-                    return Err(s!("GetProcAddress returned null").into());
+                    return Err(anyhow!(s!("GetProcAddress returned null")));
                 }
 
                 // Configures the parameters to be sent to execute the syscall indirectly
                 config.is_syscall = true as u32;
-                config.ssn = dinvk::ssn(name, ntdll).ok_or(s!("SSN not found"))?;
-                config.spoof_function = dinvk::get_syscall_address(addr).ok_or(s!("Syscall address not found"))? as *const c_void;
+                config.ssn = dinvk::ssn(name, ntdll).ok_or(anyhow!(s!("SSN not found")))?;
+                config.spoof_function = dinvk::get_syscall_address(addr).ok_or(anyhow!(s!("Syscall address not found")))? as *const c_void;
             }
         }
 
         // Call the external spoofing routine with the full config.
-        let result = unsafe { SpoofSynthetic(&mut config) };
-        Ok(result)
+        Ok(unsafe { SpoofSynthetic(&mut config) })
     }
 
     /// Searches for a specific instruction pattern inside a function’s code region,
