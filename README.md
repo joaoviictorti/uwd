@@ -25,7 +25,7 @@ Inspired by [SilentMoonwalk](https://github.com/klezVirus/SilentMoonwalk), this 
 
 ## Features
 
-- ✅ Call stack spoofing via `Synthetic` (thread-like stack emulation) and `Desync` (JOP gadget-based stack misalignment)
+- ✅ Call stack spoofing via `Synthetic` (Simulating a fake stack from scratch) and `Desync` (Reusing the thread's real stack)
 - ✅ Compatible with both `MSVC` and `GNU` toolchains (**x86_64**)
 - ✅ Inline macros: `spoof!`, `spoof_synthetic!`, `syscall!`, `syscall_synthetic!`
 - ✅ Supports `#[no_std]` environments (with `alloc`)
