@@ -176,7 +176,7 @@ impl Uwd {
         config.rbp_stack_offset = second_prolog.rbp_offset as u64;
 
         // Find a gadget `add rsp, 0x58; ret`.
-        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables).context(s!("Add RSP gadget not foun)d"))?;
+        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables).context(s!("Add RSP gadget not found"))?;
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
