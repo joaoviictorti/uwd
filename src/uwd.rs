@@ -52,7 +52,7 @@ macro_rules! spoof {
 /// - `$arg`: A list of arguments to be passed to the spoofed function (up to 11 maximum)
 #[macro_export]
 macro_rules! syscall {
-    ($name:literal, $($arg:expr),* $(,)?) => {
+    ($name:expr, $($arg:expr),* $(,)?) => {
         unsafe {
             $crate::Uwd::spoof(
                 null_mut(),
@@ -90,7 +90,7 @@ macro_rules! spoof_synthetic {
 /// - `$arg`: A list of arguments to be passed to the spoofed function (up to 11 maximum)
 #[macro_export]
 macro_rules! syscall_synthetic {
-    ($name:literal, $($arg:expr),* $(,)?) => {
+    ($name:expr, $($arg:expr),* $(,)?) => {
         unsafe {
             $crate::Uwd::spoof_synthetic(
                 null_mut(),
@@ -1160,10 +1160,10 @@ impl<T> AsUwd for T {
 }
 
 /// Specifies the type of spoof being performed
-pub enum SpoofKind {
+pub enum SpoofKind<'a> {
     /// Spoofs a call to a regular function pointer (e.g. a Windows API)
     Function,
     
     /// Spoofs a native system call using its name (e.g. `"NtAllocateVirtualMemory"`).
-    Syscall(&'static str)
+    Syscall(&'a str)
 }
