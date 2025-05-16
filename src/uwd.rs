@@ -8,8 +8,6 @@ use dinvk::{
     parse::get_nt_header, 
     hash::{jenkins3, murmur3}, 
 };
-
-use crate::utils::shuffle;
 use crate::data::{
     Registers, IMAGE_DIRECTORY_ENTRY_EXCEPTION, 
     IMAGE_RUNTIME_FUNCTION, UNWIND_CODE, Config,
@@ -1166,4 +1164,21 @@ pub enum SpoofKind<'a> {
     
     /// Spoofs a native system call using its name (e.g. `"NtAllocateVirtualMemory"`).
     Syscall(&'a str)
+}
+
+/// Randomly shuffles the elements of a mutable slice in-place using a pseudo-random
+/// number generator seeded by the CPU's timestamp counter (`rdtsc`).
+///
+/// The shuffling algorithm is a variant of the Fisher-Yates shuffle.
+///
+/// # Arguments
+/// 
+/// * `list` — A mutable slice of elements to be shuffled.
+fn shuffle<T>(list: &mut [T]) {
+    let mut seed = unsafe { core::arch::x86_64::_rdtsc() };
+    for i in (1..list.len()).rev() {
+        seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+        let j = seed as usize % (i + 1);
+        list.swap(i, j);
+    }
 }
