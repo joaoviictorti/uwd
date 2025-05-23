@@ -1,7 +1,0 @@
-[workspace]
-resolver = "2"
-members = [
-    "1. winexec",
-    "2. syscall",
-    "3. shellcode",
-]
