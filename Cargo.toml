@@ -1,6 +1,6 @@
 [package]
 name = "uwd"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 description = "Call Stack Spoofing for Rust"
 license = "MIT"
@@ -18,9 +18,10 @@ exclude = [
 
 [dependencies]
 bitfield = "0.19.0"
-dinvk = "0.1.5"
 obfstr = "0.4.4"
+dinvk = "0.2.0"
 anyhow = { version = "1.0.98", default-features = false }
+memchr = { version = "2.7.4", default-features = false }
 
 [build-dependencies]
 cc = "1.2.19"
@@ -32,3 +33,15 @@ targets = [
     "x86_64-pc-windows-gnu",
     "x86_64-pc-windows-msvc",
 ]
+
+[[example]]
+name = "winexec"
+path = "examples/1. winexec/main.rs"
+
+[[example]]
+name = "syscall"
+path = "examples/2. syscall/main.rs"
+
+[[example]]
+name = "shellcode"
+path = "examples/3. shellcode/main.rs"
