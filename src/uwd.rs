@@ -4,15 +4,13 @@ use alloc::{vec::Vec, string::String};
 use core::{ffi::c_void, slice::from_raw_parts};
 use dinvk::{
     GetModuleHandle, GetProcAddress, 
-    __readgsqword, data::TEB,
-    parse::get_nt_header, 
-    hash::{jenkins3, murmur3}, 
+    __readgsqword, data::*, parse::Pe, 
+    hash::{jenkins3, murmur3}, shuffle
 };
 use crate::data::{
-    Registers, IMAGE_DIRECTORY_ENTRY_EXCEPTION, 
-    IMAGE_RUNTIME_FUNCTION, UNWIND_CODE, Config,
-    UNWIND_INFO, UNWIND_OP_CODES::{self, *},
-    UNW_FLAG_CHAININFO, UNW_FLAG_EHANDLER
+    Registers, UNWIND_CODE, Config, UNWIND_INFO, 
+    UNWIND_OP_CODES::{self, *}, UNW_FLAG_CHAININFO, 
+    UNW_FLAG_EHANDLER
 };
 
 unsafe extern "C" {
@@ -33,10 +31,11 @@ unsafe extern "C" {
 macro_rules! spoof {
     ($addr:expr, $($arg:expr),+ $(,)?) => {
         unsafe {
-            $crate::Uwd::spoof(
+            $crate::internal::uwd_entry(
                 $addr,
-                &[$(::core::mem::transmute($arg as usize)),*],
                 $crate::SpoofKind::Function,
+                &[$(::core::mem::transmute($arg as usize)),*],
+                false,
             )
         }
     };
@@ -52,10 +51,11 @@ macro_rules! spoof {
 macro_rules! syscall {
     ($name:expr, $($arg:expr),* $(,)?) => {
         unsafe {
-            $crate::Uwd::spoof(
-                null_mut(),
+            $crate::internal::uwd_entry(
+                core::ptr::null_mut(),
+                $crate::SpoofKind::Syscall($name),
                 &[$(::core::mem::transmute($arg as usize)),*],
-                $crate::SpoofKind::Syscall($name)
+                false,
             )
         }
     };
@@ -71,10 +71,11 @@ macro_rules! syscall {
 macro_rules! spoof_synthetic {
     ($addr:expr, $($arg:expr),+ $(,)?) => {
         unsafe {
-            $crate::Uwd::spoof_synthetic(
+            $crate::internal::uwd_entry(
                 $addr,
-                &[$(::core::mem::transmute($arg as usize)),*],
                 $crate::SpoofKind::Function,
+                &[$(::core::mem::transmute($arg as usize)),*],
+                true,
             )
         }
     };
@@ -90,10 +91,11 @@ macro_rules! spoof_synthetic {
 macro_rules! syscall_synthetic {
     ($name:expr, $($arg:expr),* $(,)?) => {
         unsafe {
-            $crate::Uwd::spoof_synthetic(
-                null_mut(),
+            $crate::internal::uwd_entry(
+                core::ptr::null_mut(),
+                $crate::SpoofKind::Syscall($name),
                 &[$(::core::mem::transmute($arg as usize)),*],
-                $crate::SpoofKind::Syscall($name)
+                true,
             )
         }
     };
@@ -116,7 +118,7 @@ struct Prolog {
 }
 
 /// Root structure responsible for setting up and orchestrating the call stack spoofing process.
-pub struct Uwd;
+struct Uwd;
 
 impl Uwd {
     /// Performs call stack spoofing in `desync` mode, reusing the thread's real stack.
@@ -133,7 +135,7 @@ impl Uwd {
     /// 
     /// * `Ok(*mut c_void)` — On success, returns the result of the spoofed function or syscall.
     /// * `Err(anyhow::Error)` — If any required setup step fails (e.g., gadgets missing, invalid arguments).
-    pub fn spoof(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
+    fn spoof(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
         // Max 11 arguments allowed
         if args.len() > 11 {
             bail!(s!("Too many arguments"));
@@ -151,17 +153,17 @@ impl Uwd {
 
         // Get the base address of kernelbase.dll
         let kernelbase = GetModuleHandle(2737729883u32, Some(murmur3));
-        
-        // Extract the exception directory.
-        let (runtime_table, runtime_size) = get_exception_addr(kernelbase).context(s!("Runtime Address Not Found"))?;
+    
+        // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices.
+        let pe = Pe::new(kernelbase);
+        let tables = pe.unwind()
+            .entries()
+            .context(s!("Failed to read IMAGE_RUNTIME_FUNCTION entries from .pdata section"))?;
 
         // Locate a return address from BaseThreadInitThunk on the current stack.
         config.return_address = Self::find_base_thread_return_address()
             .context(s!("Return address not found"))? as *const c_void;
 
-        // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices.
-        let tables = unsafe { from_raw_parts(runtime_table, runtime_size as usize / size_of::<IMAGE_RUNTIME_FUNCTION>()) };
-        
         // First frame: a normal function with a clean prologue 
         let first_prolog = Self::find_prolog(kernelbase, tables).context(s!("First prolog not found"))?;
         config.first_frame_fp = (first_prolog.frame + first_prolog.offset as u64) as *const c_void;
@@ -244,7 +246,7 @@ impl Uwd {
     ///
     /// * `Ok(*mut c_void)` — On success, returns the result of the spoofed function or syscall.
     /// * `Err(anyhow::Error)` — If any required setup step fails (e.g., gadgets missing, invalid arguments).
-    pub fn spoof_synthetic(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
+    fn spoof_synthetic(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
         // Max 11 arguments allowed
         if args.len() > 11 {
             bail!(s!("Too many arguments"));
@@ -263,11 +265,11 @@ impl Uwd {
         // Get the base address of kernelbase.dll
         let kernelbase = GetModuleHandle(2737729883u32, Some(murmur3));
 
-        // Extract the exception directory.
-        let (runtime_table, runtime_size) = get_exception_addr(kernelbase).context(s!("Runtime Address Not Found"))?;
-
         // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices.
-        let tables = unsafe { from_raw_parts(runtime_table, runtime_size as usize / size_of::<IMAGE_RUNTIME_FUNCTION>()) };
+        let pe_kernelbase = Pe::new(kernelbase);
+        let tables = pe_kernelbase.unwind()
+            .entries()
+            .context(s!("Failed to read IMAGE_RUNTIME_FUNCTION entries from .pdata section"))?;
 
         // Preparing addresses to use as artificial frames to emulate thread stack initialization
         let ntdll = GetModuleHandle(2788516083u32, Some(murmur3));
@@ -282,10 +284,14 @@ impl Uwd {
         config.base_thread_addr = base_thread_addr;
 
         // Recovering the IMAGE_RUNTIME_FUNCTION structure of target apis
-        let rtl_user_runtime = find_runtime_function(ntdll, (rlt_user_addr as usize - ntdll as usize) as u32)
+        let pe_ntdll = Pe::new(ntdll);
+        let rtl_user_runtime = pe_ntdll.unwind()
+            .function_by_offset(rlt_user_addr as u32 - ntdll as u32)
             .context(s!("RtlUserThreadStart unwind info not found"))?;
-        
-        let base_thread_runtime = find_runtime_function(kernel32, (base_thread_addr as usize - kernel32 as usize) as u32)
+
+        let pe_kernel32 = Pe::new(kernel32);
+        let base_thread_runtime = pe_kernel32.unwind()
+            .function_by_offset(base_thread_addr as u32 - kernel32 as u32)
             .context(s!("BaseThreadInitThunk unwind info not found"))?;
 
         // Recovering the stack size of target apis
@@ -382,7 +388,7 @@ impl Uwd {
         let pattern = b!(&[0x48, 0xFF, 0x15]);
         unsafe {
             let bytes = from_raw_parts(start as *const u8, size as usize);
-            if let Some(pos) = bytes.windows(pattern.len()).position(|window| window == pattern) {
+            if let Some(pos) = memchr::memmem::find(bytes, pattern) {
                 // Returns valid RVA: offset of the gadget inside the function
                 return Some((pos + 7) as u32);
             }
@@ -413,7 +419,7 @@ impl Uwd {
                 let size = end - start;
                 
                 let bytes = from_raw_parts(start as *const u8, size as usize);
-                if let Some(pos) = bytes.windows(pattern.len()).position(|window| window == pattern) {
+                if let Some(pos) = memchr::memmem::find(bytes, pattern) {
                     let addr = (start as *mut u8).add(pos);
                     if let Some(size) = StackFrame::ignoring_set_fpreg(module, runtime) {
                         if size != 0 {
@@ -433,7 +439,7 @@ impl Uwd {
             shuffle(&mut gadgets);
 
             // Take the first occurrence
-            gadgets.get(0).copied()
+            gadgets.first().copied()
         }
     }
 
@@ -460,8 +466,10 @@ impl Uwd {
             }
     
             // Calculate the size of the BaseThreadInitThunk function
+            let pe_kernel32 = Pe::new(kernel32);
             let base_addr = base_thread as usize;
-            let size = get_function_size(kernel32, base_thread)? as usize;
+            let size = pe_kernel32.unwind()
+                .function_size(base_thread)? as usize;
 
             // Access the TEB and stack limits
             let teb = __readgsqword(0x30) as *const TEB;
@@ -500,21 +508,18 @@ impl Uwd {
     fn find_prolog(module_base: *mut c_void, runtime_table: &[IMAGE_RUNTIME_FUNCTION]) -> Option<Prolog> {
         let mut prologs = Vec::new();
         for runtime in runtime_table.iter() {
-            match StackFrame::size(module_base, runtime) {
-                Some((true, stack_size)) => {
-                    if let Some(offset) = Self::find_valid_instruction_offset(module_base, runtime) {
-                        let frame = module_base as u64 + runtime.BeginAddress as u64;
-                        let prolog = Prolog {
-                            frame,
-                            stack_size,
-                            offset,
-                            rbp_offset: 0
-                        };
+            if let Some((true, stack_size)) = StackFrame::stack_frame(module_base, runtime) {
+                if let Some(offset) = Self::find_valid_instruction_offset(module_base, runtime) {
+                    let frame = module_base as u64 + runtime.BeginAddress as u64;
+                    let prolog = Prolog {
+                        frame,
+                        stack_size,
+                        offset,
+                        rbp_offset: 0
+                    };
 
-                        prologs.push(prolog);
-                    }
+                    prologs.push(prolog);
                 }
-                _ => {}
             }
         }
 
@@ -528,7 +533,7 @@ impl Uwd {
         shuffle(&mut prologs);
 
         // Take the first occurrence
-        prologs.get(0).copied()
+        prologs.first().copied()
     }
 
     /// Searches for the first function in the exception directory that contains a classic
@@ -546,7 +551,7 @@ impl Uwd {
     fn find_push_rbp(module_base: *mut c_void, runtime_table: &[IMAGE_RUNTIME_FUNCTION]) -> Option<Prolog> {
         let mut prologs = Vec::new();
         for runtime in runtime_table.iter() {
-            if let Some((rbp_offset, stack_size)) = StackFrame::rbp_is_pushed_on_stack(module_base, runtime) {
+            if let Some((rbp_offset, stack_size)) = StackFrame::rbp_offset(module_base, runtime) {
                 if rbp_offset != 0 && stack_size != 0 && stack_size > rbp_offset {
                     if let Some(offset) = Self::find_valid_instruction_offset(module_base, runtime) {
                         let frame = module_base as u64 + runtime.BeginAddress as u64;
@@ -577,12 +582,57 @@ impl Uwd {
         shuffle(&mut prologs);
 
         // Take the first occurrence
-        prologs.get(0).copied()
+        prologs.first().copied()
+    }
+}
+
+/// Internal module responsible for executing call stack spoofing flows used by macros.
+pub mod internal {
+    use super::*;
+    use core::{ffi::c_void, ptr::null_mut};
+
+    /// Launches a spoofed execution using either desynchronized or synthetic stack spoofing.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr` - Target function pointer. For syscalls, this should be `null_mut()`.
+    /// * `kind` - The spoofing mode: [`Function`](SpoofKind::Function) or [`Syscall`](SpoofKind::Syscall).
+    /// * `args` - A fixed list of up to 11 arguments, cast to raw pointers.
+    /// * `synthetic` - If `true`, a fully synthetic (simulated) call stack is used.
+    ///                 If `false`, spoofing reuses the real thread's stack.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(*mut c_void)` — On success, returns the result of the spoofed call.
+    /// * `Err(anyhow::Error)` — If the spoofing setup fails or the target is invalid.
+    #[inline(always)]
+    pub fn uwd_entry(
+        addr: *mut c_void,
+        kind: SpoofKind<'_>,
+        args: &[*const c_void],
+        synthetic: bool,
+    ) -> Result<*mut c_void> {
+        match kind {
+            SpoofKind::Function => {
+                if synthetic {
+                    Uwd::spoof_synthetic(addr, args, SpoofKind::Function)
+                } else {
+                    Uwd::spoof(addr, args, SpoofKind::Function)
+                }
+            },
+            SpoofKind::Syscall(name) => {
+                if synthetic {
+                    Uwd::spoof_synthetic(null_mut(), args, SpoofKind::Syscall(name))
+                } else {
+                    Uwd::spoof(null_mut(), args, SpoofKind::Syscall(name))
+                }
+            }
+        }
     }
 }
 
 /// Represents a utility struct for stack frame analysis and spoofing logic.
-struct StackFrame;
+pub struct StackFrame;
 
 impl StackFrame {
     /// Checks if the `RBP` register is pushed or saved on the stack in a spoofable manner.
@@ -598,7 +648,7 @@ impl StackFrame {
     ///     - `rbp_offset` — Offset (in bytes) from `RSP` where `RBP` is stored.  
     ///     - `total_stack` — Total stack size allocated by the function.
     /// * `None` — If `RBP` is not safely saved or `RSP` is manipulated directly.
-    fn rbp_is_pushed_on_stack(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<(u32, u32)> {
+    pub fn rbp_offset(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<(u32, u32)> {
         unsafe {
             let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
             let unwind_code = (unwind_info as *mut u8).add(4) as *mut UNWIND_CODE;
@@ -622,11 +672,11 @@ impl StackFrame {
                     //
                     // Example: push <reg>
                     Ok(UWOP_PUSH_NONVOL) => {
-                        if Registers::RSP == op_info {
+                        if Registers::Rsp == op_info {
                             return None;
                         }
                         
-                        if Registers::RBP == op_info {
+                        if Registers::Rbp == op_info {
                             if rbp_pushed {
                                 return None;
                             }
@@ -679,11 +729,11 @@ impl StackFrame {
                     //
                     // Example: mov [rsp + 0x40], rsi ; Saves the contents of RSI in RSP + 0x40
                     Ok(UWOP_SAVE_NONVOL) => {
-                        if Registers::RSP == op_info {
+                        if Registers::Rsp == op_info {
                             return None;
                         } 
 
-                        if Registers::RBP == op_info {
+                        if Registers::Rbp == op_info {
                             if rbp_pushed {
                                 return None;
                             }
@@ -702,11 +752,11 @@ impl StackFrame {
                     //
                     // Example: mov [rsp + 0x1040], rsi ; Saves the contents of RSI in RSP + 0x1040.
                     Ok(UWOP_SAVE_NONVOL_BIG) => {
-                        if Registers::RSP == op_info {
+                        if Registers::Rsp == op_info {
                             return None;
                         }
 
-                        if Registers::RBP == op_info {
+                        if Registers::Rbp == op_info {
                             if rbp_pushed {
                                 return None;
                             }
@@ -752,7 +802,7 @@ impl StackFrame {
                 let count = (*unwind_info).CountOfCodes as usize;
                 let index = if count & 1 == 1 { count + 1 } else { count };
                 let runtime = unwind_code.add(index) as *const IMAGE_RUNTIME_FUNCTION;
-                if let Some((_, child_total)) = Self::rbp_is_pushed_on_stack(module, &*runtime) {
+                if let Some((_, child_total)) = Self::rbp_offset(module, &*runtime) {
                     total_stack += child_total;
                 } else {
                     return None;
@@ -775,7 +825,7 @@ impl StackFrame {
     /// * `Some((true, stack_size))` — If the frame is valid and uses `RBP` as frame pointer.  
     /// * `Some((false, stack_size))` — If the frame has `setfp` but not `rbp`.  
     /// * `None` — If the frame is unsafe for spoofing or uses invalid constructs.
-    fn size(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<(bool, u32)> {
+    pub fn stack_frame(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<(bool, u32)> {
         unsafe {
             let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
             let unwind_code = (unwind_info as *mut u8).add(4) as *mut UNWIND_CODE;
@@ -797,7 +847,7 @@ impl StackFrame {
                     //
                     // Example: push <reg>
                     Ok(UWOP_PUSH_NONVOL) => {
-                        if Registers::RSP == op_info && !set_fpreg_hit {
+                        if Registers::Rsp == op_info && !set_fpreg_hit {
                             return None;
                         }
 
@@ -845,7 +895,7 @@ impl StackFrame {
                     //
                     // Example: mov [rsp + 0x40], rsi ; Saves the contents of RSI in RSP + 0x40
                     Ok(UWOP_SAVE_NONVOL) => {
-                        if Registers::RSP == op_info || Registers::RBP == op_info {
+                        if Registers::Rsp == op_info || Registers::Rbp == op_info {
                             return None;
                         }
 
@@ -858,7 +908,7 @@ impl StackFrame {
                     //
                     // Example: mov [rsp + 0x1040], rsi ; Saves the contents of RSI in RSP + 0x1040.
                     Ok(UWOP_SAVE_NONVOL_BIG) => {
-                        if Registers::RSP == op_info || Registers::RBP == op_info {
+                        if Registers::Rsp == op_info || Registers::Rbp == op_info {
                             return None;
                         }
 
@@ -887,7 +937,7 @@ impl StackFrame {
                             return None;
                         }
 
-                        if (*unwind_info).FrameInfo.FrameRegister() != Registers::RBP as u8 {
+                        if (*unwind_info).FrameInfo.FrameRegister() != Registers::Rbp as u8 {
                             return None;
                         }
 
@@ -915,7 +965,7 @@ impl StackFrame {
                 let count = (*unwind_info).CountOfCodes as usize;
                 let index = if count & 1 == 1 { count + 1 } else { count };
                 let runtime = unwind_code.add(index) as *const IMAGE_RUNTIME_FUNCTION;
-                if let Some((chained_fpreg_hit, chained_stack)) = Self::size(module, &*runtime) {
+                if let Some((chained_fpreg_hit, chained_stack)) = Self::stack_frame(module, &*runtime) {
                     total_stack += chained_stack as i32;
                     set_fpreg_hit |= chained_fpreg_hit;
                 } else {
@@ -940,7 +990,7 @@ impl StackFrame {
     ///
     /// * Stack size in bytes if the frame is spoof-safe.
     /// * Returns `0` if the frame is unsafe or unspoofable.
-    fn ignoring_set_fpreg(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<u32> {
+    pub fn ignoring_set_fpreg(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<u32> {
         unsafe {
             let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
             let unwind_code = (unwind_info as *mut u8).add(4) as *mut UNWIND_CODE;
@@ -961,7 +1011,7 @@ impl StackFrame {
                     //
                     // Example: push <reg>
                     Ok(UWOP_PUSH_NONVOL) => {
-                        if Registers::RSP == op_info {
+                        if Registers::Rsp == op_info {
                             return None;
                         }
 
@@ -1009,7 +1059,7 @@ impl StackFrame {
                     //
                     // Example: mov [rsp + 0x40], rsi ; Saves the contents of RSI in RSP + 0x40
                     Ok(UWOP_SAVE_NONVOL) => {
-                        if Registers::RSP == op_info {
+                        if Registers::Rsp == op_info {
                             return None;
                         }
 
@@ -1022,7 +1072,7 @@ impl StackFrame {
                     //
                     // Example: mov [rsp + 0x1040], rsi ; Saves the contents of RSI in RSP + 0x1040.
                     Ok(UWOP_SAVE_NONVOL_BIG) => {
-                        if Registers::RSP == op_info {
+                        if Registers::Rsp == op_info {
                             return None;
                         }
 
@@ -1076,66 +1126,6 @@ impl StackFrame {
     }
 }
 
-/// Retrieves the address and size of the Exception Directory from a module.
-///
-/// # Arguments
-///
-/// * `module` - A pointer to the base address of the loaded module.
-///
-/// # Returns
-///
-/// * A tuple containing:
-///     - Pointer to the `IMAGE_RUNTIME_FUNCTION` table.
-///     - Size in bytes of the table.
-fn get_exception_addr(module: *mut c_void) -> Option<(*mut IMAGE_RUNTIME_FUNCTION, u32)> {
-    let nt_header = get_nt_header(module)?;
-    let rva = unsafe { (*nt_header).OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].VirtualAddress };
-    let size = unsafe { (*nt_header).OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size };
-
-    return Some(((module as usize + rva as usize) as *mut IMAGE_RUNTIME_FUNCTION, size));
-}
-
-/// Retrieves the size in bytes of a function from its address within a loaded module.
-///
-/// # Arguments
-///
-/// * `module` - A pointer to the base address of the loaded module.
-/// * `function` - A pointer to the function whose size should be calculated.
-///
-/// # Returns
-///
-/// * `Some(size)` — The size in bytes of the function, if found in the exception directory.
-/// * `None` — If the function is not listed in the runtime function table.
-fn get_function_size(module: *mut c_void, function: *mut c_void) -> Option<u64> {
-    let runtime = find_runtime_function(module, (function as usize - module as usize) as u32)?;
-    let start = module as u64 + runtime.BeginAddress as u64;
-    let end = module as u64 + runtime.EndAddress as u64;
-    Some(end - start)
-}
-
-/// Finds a runtime function entry corresponding to a specific offset in a module.
-///
-/// # Arguments
-///
-/// * `module` - The base address of the module where the function resides.
-/// * `offset` - The offset from the module base to the target function.
-///
-/// # Returns
-///
-/// * `Some(&IMAGE_RUNTIME_FUNCTION)` - if the function entry is found.
-/// * `None` - if not found.
-fn find_runtime_function(module: *mut c_void, offset: u32) -> Option<&'static IMAGE_RUNTIME_FUNCTION> {
-    let (runtime_table, size) = get_exception_addr(module)?;
-    let tables = unsafe { from_raw_parts(runtime_table, size as usize / size_of::<IMAGE_RUNTIME_FUNCTION>()) };
-    for runtime_function in tables.iter() {
-        if runtime_function.BeginAddress == offset {
-            return Some(runtime_function)
-        } 
-    }
-
-    None
-}
-
 /// Trait that allows casting any type to a raw pointer (`*const c_void` or `*mut c_void`).
 pub trait AsUwd {
     /// Casts an immutable reference to a `*const c_void`.
@@ -1164,21 +1154,4 @@ pub enum SpoofKind<'a> {
     
     /// Spoofs a native system call using its name (e.g. `"NtAllocateVirtualMemory"`).
     Syscall(&'a str)
-}
-
-/// Randomly shuffles the elements of a mutable slice in-place using a pseudo-random
-/// number generator seeded by the CPU's timestamp counter (`rdtsc`).
-///
-/// The shuffling algorithm is a variant of the Fisher-Yates shuffle.
-///
-/// # Arguments
-/// 
-/// * `list` — A mutable slice of elements to be shuffled.
-fn shuffle<T>(list: &mut [T]) {
-    let mut seed = unsafe { core::arch::x86_64::_rdtsc() };
-    for i in (1..list.len()).rev() {
-        seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
-        let j = seed as usize % (i + 1);
-        list.swap(i, j);
-    }
 }

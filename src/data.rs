@@ -8,9 +8,6 @@ pub const UNW_FLAG_EHANDLER: u8 = 0x1;
 /// Indicates chained unwind information is present.
 pub const UNW_FLAG_CHAININFO: u8  = 0x4;
 
-/// Directory entry index for exception data in the PE header.
-pub const IMAGE_DIRECTORY_ENTRY_EXCEPTION: usize = 3;
-
 /// Configuration structure passed to the spoof ASM routine.
 #[repr(C)]
 #[derive(Debug)]
@@ -94,14 +91,14 @@ impl Default for Config {
 #[repr(u8)]
 #[allow(dead_code)]
 pub enum Registers {
-    RAX = 0,
-    RCX,
-    RDX,
-    RBX,
-    RSP,
-    RBP,
-    RSI,
-    RDI,
+    Rax = 0,
+    Rcx,
+    Rdx,
+    Rbx,
+    Rsp,
+    Rbp,
+    Rsi,
+    Rdi,
     R8,
     R9,
     R10,
@@ -116,22 +113,6 @@ impl PartialEq<usize> for Registers {
     fn eq(&self, other: &usize) -> bool {
         *self as usize == *other
     }
-}
-
-/// Represents a runtime function entry in the exception directory.
-///
-/// This structure is used in stack unwinding and maps code ranges to unwind metadata.
-#[repr(C)]
-#[derive(Copy, Clone, Default, Debug)]
-pub struct IMAGE_RUNTIME_FUNCTION {
-    /// Start address (RVA) of the function.
-    pub BeginAddress: u32,
-
-    /// End address (RVA) of the function.
-    pub EndAddress: u32,
-
-    /// RVA of the associated `UNWIND_INFO`.
-    pub UnwindData: u32
 }
 
 /// Union representing a single unwind operation code.
@@ -255,7 +236,7 @@ impl TryFrom<u8> for UNWIND_OP_CODES {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0..=10 => Ok(unsafe { core::mem::transmute(value) }),
+            0..=10 => Ok(unsafe { core::mem::transmute::<u8, UNWIND_OP_CODES>(value) }),
             _ => Err(()),
         }
     }
