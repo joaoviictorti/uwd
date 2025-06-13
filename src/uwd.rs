@@ -4,8 +4,8 @@ use alloc::{vec::Vec, string::String};
 use core::{ffi::c_void, slice::from_raw_parts};
 use dinvk::{
     GetModuleHandle, GetProcAddress, 
-    __readgsqword, data::*, parse::Pe, 
-    hash::{jenkins3, murmur3}, shuffle
+    NtCurrentTeb, data::*, parse::PE, 
+    hash::{jenkins3, murmur3}, shuffle, 
 };
 use crate::data::{
     Registers, UNWIND_CODE, Config, UNWIND_INFO, 
@@ -118,7 +118,7 @@ struct Prolog {
 }
 
 /// Root structure responsible for setting up and orchestrating the call stack spoofing process.
-struct Uwd;
+pub struct Uwd;
 
 impl Uwd {
     /// Performs call stack spoofing in `desync` mode, reusing the thread's real stack.
@@ -155,7 +155,7 @@ impl Uwd {
         let kernelbase = GetModuleHandle(2737729883u32, Some(murmur3));
     
         // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices.
-        let pe = Pe::new(kernelbase);
+        let pe = PE::parse(kernelbase);
         let tables = pe.unwind()
             .entries()
             .context(s!("Failed to read IMAGE_RUNTIME_FUNCTION entries from .pdata section"))?;
@@ -266,7 +266,7 @@ impl Uwd {
         let kernelbase = GetModuleHandle(2737729883u32, Some(murmur3));
 
         // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices.
-        let pe_kernelbase = Pe::new(kernelbase);
+        let pe_kernelbase = PE::parse(kernelbase);
         let tables = pe_kernelbase.unwind()
             .entries()
             .context(s!("Failed to read IMAGE_RUNTIME_FUNCTION entries from .pdata section"))?;
@@ -284,12 +284,12 @@ impl Uwd {
         config.base_thread_addr = base_thread_addr;
 
         // Recovering the IMAGE_RUNTIME_FUNCTION structure of target apis
-        let pe_ntdll = Pe::new(ntdll);
+        let pe_ntdll = PE::parse(ntdll);
         let rtl_user_runtime = pe_ntdll.unwind()
             .function_by_offset(rlt_user_addr as u32 - ntdll as u32)
             .context(s!("RtlUserThreadStart unwind info not found"))?;
 
-        let pe_kernel32 = Pe::new(kernel32);
+        let pe_kernel32 = PE::parse(kernel32);
         let base_thread_runtime = pe_kernel32.unwind()
             .function_by_offset(base_thread_addr as u32 - kernel32 as u32)
             .context(s!("BaseThreadInitThunk unwind info not found"))?;
@@ -410,7 +410,7 @@ impl Uwd {
     /// 
     /// * `Some((address, frame_size))` — Pointer to the start of the matching gadget and the associated stack frame size.
     /// * `None` — If the gadget was not found.
-    fn find_gadget(module: *mut c_void, pattern: &[u8], runtime_table: &[IMAGE_RUNTIME_FUNCTION]) -> Option<(*mut u8, u32)> {
+    pub fn find_gadget(module: *mut c_void, pattern: &[u8], runtime_table: &[IMAGE_RUNTIME_FUNCTION]) -> Option<(*mut u8, u32)> {
         unsafe {
             let mut gadgets = Vec::new();
             for runtime in runtime_table.iter() { 
@@ -466,13 +466,13 @@ impl Uwd {
             }
     
             // Calculate the size of the BaseThreadInitThunk function
-            let pe_kernel32 = Pe::new(kernel32);
+            let pe_kernel32 = PE::parse(kernel32);
             let base_addr = base_thread as usize;
             let size = pe_kernel32.unwind()
                 .function_size(base_thread)? as usize;
 
             // Access the TEB and stack limits
-            let teb = __readgsqword(0x30) as *const TEB;
+            let teb = NtCurrentTeb();
             let stack_base = (*teb).Reserved1[1] as usize;
             let stack_limit = (*teb).Reserved1[2] as usize;
     

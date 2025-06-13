@@ -57,9 +57,9 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
 name = "dinvk"
-version = "0.2.0"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c69648d7dc1c871364f686c884a3863e6e0c551e58cd1f05c6a92aaf03a7b877"
+checksum = "1ce9a7fdf40426cf0b42b3309aea86ce53b620b92281f239391faeae6c5f8eb1"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -153,7 +153,7 @@ checksum = "5a5f39404a5da50712a4c1eecf25e90dd62b613502b7e925fd4e4d19b5c96512"
 
 [[package]]
 name = "uwd"
-version = "0.2.2"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "bitfield",
