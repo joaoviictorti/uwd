@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(())
     }
 
-    println!("[+] Address allocated: {:?}", addr);
+    println!("[+] Address allocated (Desync): {:?}", addr);
 
     // Running indirect syscall with Call Stack Spoofing (Synthetic)
     let mut addr = null_mut::<c_void>();
@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(())
     }
 
-    println!("[+] Address allocated: {:?}", addr);
+    println!("[+] Address allocated (Synthetic): {:?}", addr);
 
     Ok(())
 }
