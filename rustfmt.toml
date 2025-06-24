@@ -1,0 +1,25 @@
+# Maximum width of a line before rustfmt wraps it to the next line
+max_width = 150
+
+# Maximum width allowed for a function call before its arguments are wrapped across multiple lines
+fn_call_width = 100
+
+# Maximum width for method chains (e.g., .map().filter()) before rustfmt breaks them into multiple lines
+chain_width = 40
+
+# Determines how aggressively rustfmt keeps short items (structs, args, etc.) on a single line
+# "Max" keeps as much as possible on one line
+use_small_heuristics = "Max"
+
+# Prevents rustfmt from automatically reordering `use` statements
+# Keeps imports in the order you wrote them
+reorder_imports = false
+
+# Automatically wraps and formats long comments to respect `max_width`
+normalize_comments = true
+
+# Reorders items within `impl` blocks (e.g., consts, types, and functions) for consistency
+reorder_impl_items = true
+
+# Groups imports from the same module together into a single `use` statement
+group_imports = "One"
