@@ -6,7 +6,7 @@ use core::ffi::c_void;
 pub const UNW_FLAG_EHANDLER: u8 = 0x1;
 
 /// Indicates chained unwind information is present.
-pub const UNW_FLAG_CHAININFO: u8  = 0x4;
+pub const UNW_FLAG_CHAININFO: u8 = 0x4;
 
 /// Configuration structure passed to the spoof ASM routine.
 #[repr(C)]
@@ -14,7 +14,7 @@ pub const UNW_FLAG_CHAININFO: u8  = 0x4;
 pub struct Config {
     /// Address RtlUserThreadStart
     pub rtl_user_addr: *const c_void,
-    
+
     /// Stack Size RtlUserThreadStart
     pub rtl_user_thread_size: u64,
 
@@ -26,7 +26,7 @@ pub struct Config {
 
     /// First (fake) return address frame
     pub first_frame_fp: *const c_void,
-    
+
     /// Second (ROP) return address frame
     pub second_frame_fp: *const c_void,
 
@@ -85,7 +85,7 @@ impl Default for Config {
 }
 
 /// Enumeration of x86_64 general-purpose registers.
-/// 
+///
 /// Used in unwind parsing or register mapping logic.
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -106,7 +106,7 @@ pub enum Registers {
     R12,
     R13,
     R14,
-    R15
+    R15,
 }
 
 impl PartialEq<usize> for Registers {
@@ -153,7 +153,7 @@ pub union UNWIND_INFO_0 {
     pub ExceptionHandler: u32,
 
     /// Address of a chained function entry (for nested functions).
-    pub FunctionEntry: u32
+    pub FunctionEntry: u32,
 }
 
 bitfield::bitfield! {

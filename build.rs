@@ -22,19 +22,15 @@ fn main() {
             .compile("spoof");
     } else if target.contains("gnu") {
         // Use NASM with nasm_rs
-        let sources = [
-            "src/asm/gnu/desync.asm",
-            "src/asm/gnu/synthetic.asm",
-        ];
-        
+        let sources = ["src/asm/gnu/desync.asm", "src/asm/gnu/synthetic.asm"];
         if let Err(e) = nasm_rs::compile_library("spoof", &sources) {
             panic!("Failed to compile with NASM [spoof]: {}", e);
         }
-        
+
         for source in &sources {
             println!("cargo:rerun-if-changed={}", source);
         }
-        
+
         println!("cargo:rustc-link-search=native={}", out_dir);
         println!("cargo:rustc-link-lib=static=spoof");
     } else {
