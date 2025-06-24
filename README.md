@@ -19,7 +19,6 @@ Inspired by [SilentMoonwalk](https://github.com/klezVirus/SilentMoonwalk), this 
     - [Spoofing WinExec](#spoofing-winexec)
     - [Spoofing an Indirect Syscall](#spoofing-an-indirect-syscall)
 - [Additional Resources](#additional-resources)
-- [Contributing to uwd](#contributing-to-uwd)
 - [References](#references)
 - [License](#license)
 
@@ -119,18 +118,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Additional Resources
 
 For more examples, check the [examples](/examples) folder in the repository.
-
-## Contributing to uwd
-
-To contribute to **uwd**, follow these steps:
-
-1. Fork this repository.
-2. Create a branch: `git checkout -b <branch_name>`.
-3. Make your changes and commit them: `git commit -m '<commit_message>'`.
-4. Push your changes to your branch: `git push origin <branch_name>`.
-5. Create a pull request.
-
-Alternatively, consult the [GitHub documentation](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests) on how to create a pull request.
 
 ## References
 
