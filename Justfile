@@ -32,3 +32,7 @@ test:
 # Run a specific example
 example name:
     cargo run --example {{name}}
+
+# Test this workflow on your machine with `act`
+act:
+    act -P windows-latest=-self-hosted
