@@ -36,12 +36,12 @@ targets = [
 
 [[example]]
 name = "winexec"
-path = "examples/1. winexec/main.rs"
+path = "examples/winexec/main.rs"
 
 [[example]]
 name = "syscall"
-path = "examples/2. syscall/main.rs"
+path = "examples/syscall/main.rs"
 
 [[example]]
 name = "shellcode"
-path = "examples/3. shellcode/main.rs"
+path = "examples/shellcode/main.rs"
