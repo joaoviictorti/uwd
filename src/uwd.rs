@@ -165,23 +165,31 @@ impl Uwd {
             .context(s!("Return address not found"))? as *const c_void;
 
         // First frame: a normal function with a clean prologue 
-        let first_prolog = Self::find_prolog(kernelbase, tables).context(s!("First prolog not found"))?;
+        let first_prolog = Self::find_prolog(kernelbase, tables)
+            .context(s!("First prolog not found"))?;
+        
         config.first_frame_fp = (first_prolog.frame + first_prolog.offset as u64) as *const c_void;
         config.first_frame_size = first_prolog.stack_size as u64;
 
         // Second frame: looks specifically for a prologue with `push rbp`.
-        let second_prolog = Self::find_push_rbp(kernelbase, tables).context(s!("Second prolog not found"))?;
+        let second_prolog = Self::find_push_rbp(kernelbase, tables)
+            .context(s!("Second prolog not found"))?;
+        
         config.second_frame_fp = (second_prolog.frame + second_prolog.offset as u64) as *const c_void;
         config.second_frame_size = second_prolog.stack_size as u64;
         config.rbp_stack_offset = second_prolog.rbp_offset as u64;
 
         // Find a gadget `add rsp, 0x58; ret`.
-        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables).context(s!("Add RSP gadget not found"))?;
+        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables)
+            .context(s!("Add RSP gadget not found"))?;
+
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
         // Find a gadget that performs `jmp rbx` - to restore the original call.
-        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables).context(s!("JMP RBX gadget not found"))?;
+        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables)
+            .context(s!("JMP RBX gadget not found"))?;
+        
         config.jmp_rbx_gadget = jmp_rbx_addr as *const c_void;
         config.jmp_rbx_frame_size = size as u64;
 
@@ -224,7 +232,8 @@ impl Uwd {
                 // Configures the parameters to be sent to execute the syscall indirectly
                 config.is_syscall = true as u32;
                 config.ssn = dinvk::ssn(name, ntdll).context(s!("SSN not found"))?;
-                config.spoof_function = dinvk::get_syscall_address(addr).context(s!("Syscall address not found"))? as *const c_void;
+                config.spoof_function = dinvk::get_syscall_address(addr)
+                    .context(s!("Syscall address not found"))? as *const c_void;
             }
         }
 
@@ -301,23 +310,31 @@ impl Uwd {
         config.base_thread_size = base_thread_size as u64;
 
         // First frame: a normal function with a clean prologue 
-        let first_prolog = Self::find_prolog(kernelbase, tables).context(s!("First prolog not found"))?;
+        let first_prolog = Self::find_prolog(kernelbase, tables)
+            .context(s!("First prolog not found"))?;
+        
         config.first_frame_fp = (first_prolog.frame + first_prolog.offset as u64) as *const c_void;
         config.first_frame_size = first_prolog.stack_size as u64;
 
         // Second frame: looks specifically for a prologue with `push rbp`.
-        let second_prolog = Self::find_push_rbp(kernelbase, tables).context(s!("Second prolog not found"))?;
+        let second_prolog = Self::find_push_rbp(kernelbase, tables)
+            .context(s!("Second prolog not found"))?;
+        
         config.second_frame_fp = (second_prolog.frame + second_prolog.offset as u64) as *const c_void;
         config.second_frame_size = second_prolog.stack_size as u64;
         config.rbp_stack_offset = second_prolog.rbp_offset as u64;
 
         // Find a gadget `add rsp, 0x58; ret`.
-        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables).context(s!("Add RSP gadget not found"))?;
+        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables)
+            .context(s!("Add RSP gadget not found"))?;
+        
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
         // Find a gadget that performs `jmp rbx` - to restore the original call.
-        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables).context(s!("JMP RBX gadget not found"))?;
+        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables)
+            .context(s!("JMP RBX gadget not found"))?;
+        
         config.jmp_rbx_gadget = jmp_rbx_addr as *const c_void;
         config.jmp_rbx_frame_size = size as u64;
 
@@ -354,7 +371,8 @@ impl Uwd {
                 // Configures the parameters to be sent to execute the syscall indirectly
                 config.is_syscall = true as u32;
                 config.ssn = dinvk::ssn(name, ntdll).context(s!("SSN not found"))?;
-                config.spoof_function = dinvk::get_syscall_address(addr).context(s!("Syscall address not found"))? as *const c_void;
+                config.spoof_function = dinvk::get_syscall_address(addr)
+                    .context(s!("Syscall address not found"))? as *const c_void;
             }
         }
 
