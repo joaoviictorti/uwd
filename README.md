@@ -7,20 +7,6 @@
 ![Stars](https://img.shields.io/github/stars/joaoviictorti/uwd)
 ![License](https://img.shields.io/github/license/joaoviictorti/uwd)
 
-## Table of Contents
-
-- [What is uwd](#features)
-- [Features](#features)
-- [Getting started](#getting-started)
-- [Usage](#usage)
-    - [Spoofing WinExec](#spoofing-winexec)
-    - [Spoofing an Indirect Syscall](#spoofing-an-indirect-syscall)
-- [Additional Resources](#additional-resources)
-- [References](#references)
-- [License](#license)
-
-## What is uwd
-
 `uwd` is a Rust library for call stack spoofing on Windows, allowing you to execute arbitrary functions with a forged call stack that evades analysis, logging, or detection during stack unwinding.
 
 Inspired by [SilentMoonwalk](https://github.com/klezVirus/SilentMoonwalk), this crate brings low-level spoofing capabilities into a clean, idiomatic Rust interface with full support for `#[no_std]`, `MSVC` and `GNU` toolchains, and automated gadget resolution.
