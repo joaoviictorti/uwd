@@ -1,5 +1,4 @@
 #![no_std]
-#![warn(clippy::all)]
 #![doc = include_str!("../README.md")]
 
 extern crate alloc;
