@@ -7,29 +7,18 @@
 ![Stars](https://img.shields.io/github/stars/joaoviictorti/uwd)
 ![License](https://img.shields.io/github/license/joaoviictorti/uwd)
 
-`uwd` (Unwind Desynchronizer) is a Rust library for call stack spoofing on Windows, allowing you to execute arbitrary functions with a forged call stack that evades analysis, logging, or detection during stack unwinding.
+`uwd` is a Rust library for call stack spoofing on Windows, allowing you to execute arbitrary functions with a forged call stack that evades analysis, logging, or detection during stack unwinding.
 
 Inspired by [SilentMoonwalk](https://github.com/klezVirus/SilentMoonwalk), this crate brings low-level spoofing capabilities into a clean, idiomatic Rust interface with full support for `#[no_std]`, `MSVC` and `GNU` toolchains, and automated gadget resolution.
 
-## Table of Contents
-
-- [Features](#features)
-- [Installation](#installation)
-- [Usage](#usage)
-    - [Spoofing WinExec](#spoofing-winexec)
-    - [Spoofing an Indirect Syscall](#spoofing-an-indirect-syscall)
-- [Additional Resources](#additional-resources)
-- [References](#references)
-- [License](#license)
-
 ## Features
 
-- ✅ Call stack spoofing via `Synthetic` (Simulating a fake stack from scratch) and `Desync` (Reusing the thread's real stack).
+- ✅ Call stack spoofing via `Synthetic` and `Desync`.
 - ✅ Compatible with both `MSVC` and `GNU` toolchains (**x64**).
 - ✅ Inline macros: `spoof!`, `spoof_synthetic!`, `syscall!`, `syscall_synthetic!`.
 - ✅ Supports `#[no_std]` environments (with `alloc`).
 
-## Installation
+## Getting started
 
 Add `uwd` to your project by updating your `Cargo.toml`:
 ```bash
