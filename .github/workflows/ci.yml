@@ -1,0 +1,57 @@
+name: uwd-ci
+
+on: [push, pull_request]
+
+jobs:
+  fmt:
+    name: Rustfmt Check
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rustfmt
+        run: |
+          rustup toolchain install nightly
+          rustup component add rustfmt --toolchain nightly
+
+      - name: Run rustfmt
+        run: cargo +nightly fmt --check
+
+  clippy:
+    name: Clippy Lint Check
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        run: |
+          rustup default stable
+          rustup component add clippy
+
+      - name: Run Clippy
+        run: cargo clippy -- -D warnings
+
+  build:
+    name: Build Examples
+    runs-on: windows-latest
+
+    strategy:
+      matrix:
+        example: [winexec, syscall, shellcode]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        run: rustup default stable
+
+      - name: Build example ${{ matrix.example }}
+        run: cargo build --release --example ${{ matrix.example }}
+
+      - name: Upload ${{ matrix.example }}.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.example }}.exe
+          path: target/release/examples/${{ matrix.example }}.exe
