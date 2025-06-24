@@ -3,7 +3,6 @@
 
 extern crate alloc;
 
-/// Internal structures and types for spoof configuration.
 mod data;
 
 // Core logic implementing spoofing routines.
