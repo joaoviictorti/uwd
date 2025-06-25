@@ -542,7 +542,12 @@ impl Uwd {
             if let Some((true, stack_size)) = StackFrame::stack_frame(module_base, runtime) {
                 if let Some(offset) = Self::find_valid_instruction_offset(module_base, runtime) {
                     let frame = module_base as u64 + runtime.BeginAddress as u64;
-                    let prolog = Prolog { frame, stack_size, offset, rbp_offset: 0 };
+                    let prolog = Prolog {
+                        frame,
+                        stack_size,
+                        offset,
+                        rbp_offset: 0,
+                    };
 
                     prologs.push(prolog);
                 }
@@ -581,7 +586,12 @@ impl Uwd {
                 if rbp_offset != 0 && stack_size != 0 && stack_size > rbp_offset {
                     if let Some(offset) = Self::find_valid_instruction_offset(module_base, runtime) {
                         let frame = module_base as u64 + runtime.BeginAddress as u64;
-                        let prolog = Prolog { frame, stack_size, offset, rbp_offset };
+                        let prolog = Prolog {
+                            frame,
+                            stack_size,
+                            offset,
+                            rbp_offset,
+                        };
 
                         prologs.push(prolog);
                     }
