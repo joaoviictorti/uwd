@@ -498,9 +498,7 @@ impl Uwd {
             // Calculate the size of the BaseThreadInitThunk function
             let pe_kernel32 = PE::parse(kernel32);
             let base_addr = base_thread as usize;
-            let size = pe_kernel32
-                .unwind()
-                .function_size(base_thread)? as usize;
+            let size = pe_kernel32.unwind().function_size(base_thread)? as usize;
 
             // Access the TEB and stack limits
             let teb = NtCurrentTeb();
