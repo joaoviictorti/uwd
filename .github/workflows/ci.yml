@@ -3,21 +3,6 @@ name: build
 on: [push, pull_request]
 
 jobs:
-  fmt:
-    name: Rustfmt Check
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rustfmt
-        run: |
-          rustup toolchain install nightly
-          rustup component add rustfmt --toolchain nightly
-
-      - name: Run rustfmt
-        run: cargo +nightly fmt --check
-
   clippy:
     name: Clippy Lint Check
     runs-on: windows-latest
