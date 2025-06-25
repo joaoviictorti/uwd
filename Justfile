@@ -19,7 +19,7 @@ publish:
 
 # Formats all Rust source files
 fmt:
-    cargo fmt
+    cargo +nightly fmt --check
 
 # Builds local documentation
 docs:

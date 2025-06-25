@@ -185,8 +185,8 @@ impl Uwd {
         config.rbp_stack_offset = second_prolog.rbp_offset as u64;
 
         // Find a gadget `add rsp, 0x58; ret`.
-        let (add_rsp_addr, size) =
-            Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables).context(s!("Add RSP gadget not found"))?;
+        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables)
+            .context(s!("Add RSP gadget not found"))?;
 
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
@@ -241,7 +241,8 @@ impl Uwd {
                 // Configures the parameters to be sent to execute the syscall indirectly
                 config.is_syscall = true as u32;
                 config.ssn = dinvk::ssn(name, ntdll).context(s!("SSN not found"))?;
-                config.spoof_function = dinvk::get_syscall_address(addr).context(s!("Syscall address not found"))? as *const c_void;
+                config.spoof_function = dinvk::get_syscall_address(addr)
+                    .context(s!("Syscall address not found"))? as *const c_void;
             }
         }
 
@@ -284,10 +285,9 @@ impl Uwd {
 
         // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices.
         let pe_kernelbase = PE::parse(kernelbase);
-        let tables = pe_kernelbase
-            .unwind()
-            .entries()
-            .context(s!("Failed to read IMAGE_RUNTIME_FUNCTION entries from .pdata section"))?;
+        let tables = pe_kernelbase.unwind().entries().context(s!(
+            "Failed to read IMAGE_RUNTIME_FUNCTION entries from .pdata section"
+        ))?;
 
         // Preparing addresses to use as artificial frames to emulate thread stack initialization
         let ntdll = GetModuleHandle(2788516083u32, Some(murmur3));
@@ -316,8 +316,7 @@ impl Uwd {
 
         // Recovering the stack size of target apis
         let rtl_user_size = StackFrame::ignoring_set_fpreg(ntdll, rtl_user_runtime).context(s!("RtlUserThreadStart stack size not found"))?;
-        let base_thread_size =
-            StackFrame::ignoring_set_fpreg(kernel32, base_thread_runtime).context(s!("BaseThreadInitThunk stack size not found"))?;
+        let base_thread_size = StackFrame::ignoring_set_fpreg(kernel32, base_thread_runtime).context(s!("BaseThreadInitThunk stack size not found"))?;
 
         config.rtl_user_thread_size = rtl_user_size as u64;
         config.base_thread_size = base_thread_size as u64;
@@ -334,8 +333,8 @@ impl Uwd {
         config.rbp_stack_offset = second_prolog.rbp_offset as u64;
 
         // Find a gadget `add rsp, 0x58; ret`.
-        let (add_rsp_addr, size) =
-            Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables).context(s!("Add RSP gadget not found"))?;
+        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables)
+            .context(s!("Add RSP gadget not found"))?;
 
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
@@ -384,7 +383,8 @@ impl Uwd {
                 // Configures the parameters to be sent to execute the syscall indirectly
                 config.is_syscall = true as u32;
                 config.ssn = dinvk::ssn(name, ntdll).context(s!("SSN not found"))?;
-                config.spoof_function = dinvk::get_syscall_address(addr).context(s!("Syscall address not found"))? as *const c_void;
+                config.spoof_function = dinvk::get_syscall_address(addr)
+                    .context(s!("Syscall address not found"))? as *const c_void;
             }
         }
 
