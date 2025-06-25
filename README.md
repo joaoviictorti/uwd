@@ -3,6 +3,7 @@
 ![Rust](https://img.shields.io/badge/made%20with-Rust-red)
 ![crate](https://img.shields.io/crates/v/uwd.svg)
 ![docs](https://docs.rs/uwd/badge.svg)
+[![build](https://github.com/joaoviictorti/uwd/actions/workflows/ci.yml/badge.svg)](https://github.com/joaoviictorti/uwd/actions/workflows/ci.yml)
 ![Forks](https://img.shields.io/github/forks/joaoviictorti/uwd)
 ![Stars](https://img.shields.io/github/stars/joaoviictorti/uwd)
 ![License](https://img.shields.io/github/license/joaoviictorti/uwd)
