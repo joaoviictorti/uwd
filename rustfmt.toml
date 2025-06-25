@@ -7,10 +7,6 @@ fn_call_width = 100
 # Maximum width for method chains (e.g., .map().filter()) before rustfmt breaks them into multiple lines
 chain_width = 40
 
-# Determines how aggressively rustfmt keeps short items (structs, args, etc.) on a single line
-# "Max" keeps as much as possible on one line
-use_small_heuristics = "Max"
-
 # Prevents rustfmt from automatically reordering `use` statements
 # Keeps imports in the order you wrote them
 reorder_imports = false
