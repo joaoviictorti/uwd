@@ -36,3 +36,7 @@ example name:
 # Test this workflow on your machine with `act`
 act:
     act -P windows-latest=-self-hosted
+
+# Format all .toml files using Taplo
+taplo:
+    taplo format
