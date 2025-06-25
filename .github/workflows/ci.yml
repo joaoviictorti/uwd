@@ -37,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Taplo
-        run: cargo install taplo --locked
+        run: cargo install taplo-cli
       - name: Run Taplo format
         run: taplo format --check
 
