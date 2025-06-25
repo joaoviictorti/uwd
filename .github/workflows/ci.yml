@@ -4,6 +4,7 @@ on: [push, pull_request]
 
 jobs:
   clippy:
+    # Runs Clippy to check for lints in the Rust code
     name: Clippy Lint Check
     runs-on: windows-latest
 
@@ -19,14 +20,29 @@ jobs:
         run: cargo clippy
 
   doc:
+    # Builds project documentation, including private items
     name: Docs Check
     runs-on: windows-latest
+
     steps:
       - uses: actions/checkout@v4
+
       - name: Check docs
         run: cargo doc --no-deps --document-private-items
 
+  taplo:
+    # Check that the .toml files are formatted correctly with Taplo
+    name: Taplo Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Taplo
+        run: cargo install taplo --locked
+      - name: Run Taplo format
+        run: taplo format --check
+
   build:
+    # Builds the examples listed in the matrix
     name: Build Examples
     runs-on: windows-latest
 
