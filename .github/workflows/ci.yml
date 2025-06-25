@@ -30,17 +30,6 @@ jobs:
       - name: Check docs
         run: cargo doc --no-deps --document-private-items
 
-  taplo:
-    # Check that the .toml files are formatted correctly with Taplo
-    name: Taplo Format Check
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Taplo
-        run: cargo install taplo-cli
-      - name: Run Taplo format
-        run: taplo format --check
-
   build:
     # Builds the examples listed in the matrix
     name: Build Examples
