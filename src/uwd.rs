@@ -480,7 +480,7 @@ impl Uwd {
     ///
     /// * `Some(usize)` — The stack address (`RSP`) where a return to `BaseThreadInitThunk` was found.
     /// * `None` — If `kernel32.dll` or the target function could not be located, or
-    ///            if no such return address is found on the stack.
+    ///     if no such return address is found on the stack.
     fn find_base_thread_return_address() -> Option<usize> {
         unsafe {
             // Get handle for kernel32.dll
@@ -627,7 +627,7 @@ pub mod internal {
     /// * `kind` - The spoofing mode: [`Function`](SpoofKind::Function) or [`Syscall`](SpoofKind::Syscall).
     /// * `args` - A fixed list of up to 11 arguments, cast to raw pointers.
     /// * `synthetic` - If `true`, a fully synthetic (simulated) call stack is used.
-    ///                 If `false`, spoofing reuses the real thread's stack.
+    ///     If `false`, spoofing reuses the real thread's stack.
     ///
     /// # Returns
     ///
