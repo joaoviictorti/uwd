@@ -76,6 +76,7 @@ This example performs a indirect system call to `NtAllocateVirtualMemory` with a
 
 ```rs
 use std::{ffi::c_void, ptr::null_mut};
+use dinvk::NT_SUCCESS;
 use uwd::{syscall, syscall_synthetic, AsUwd};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -83,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut addr = null_mut::<c_void>();
     let mut size = (1 << 12) as usize;
     let mut status = syscall!("NtAllocateVirtualMemory", -1isize, addr.as_uwd_mut(), 0, size.as_uwd_mut(), 0x3000, 0x04)? as i32;
-    if status < 0 {
+    if !NT_SUCCESS(status) {
         eprintln!("NtAllocateVirtualMemory Failed With Status: {status:#X}");
         return Ok(())
     }
@@ -94,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut addr = null_mut::<c_void>();
     let mut size = (1 << 12) as usize;
     status = syscall_synthetic!("NtAllocateVirtualMemory", -1isize, addr.as_uwd_mut(), 0, size.as_uwd_mut(), 0x3000, 0x04)? as i32;
-    if status < 0 {
+    if !NT_SUCESS(status) {
         eprintln!("NtAllocateVirtualMemory Failed With Status [2]: {status:#X}");
         return Ok(())
     }
