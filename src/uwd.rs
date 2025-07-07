@@ -4,17 +4,16 @@ use anyhow::{Context, Result, bail};
 use obfstr::{obfbytes as b, obfstring as s};
 use dinvk::{
     GetModuleHandle, GetProcAddress, NtCurrentTeb,
-    data::*,
+    data::IMAGE_RUNTIME_FUNCTION,
     hash::{jenkins3, murmur3},
     parse::PE,
     shuffle,
 };
+
 use crate::data::{
     Config, Registers,
     UNWIND_OP_CODES::{self, *},
 };
-
-#[rustfmt::skip]
 use crate::data::{
     UNW_FLAG_CHAININFO,
     UNW_FLAG_EHANDLER,
@@ -187,19 +186,18 @@ impl Uwd {
         // Find a gadget `add rsp, 0x58; ret`.
         let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables)
             .context(s!("Add RSP gadget not found"))?;
-
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
         // Find a gadget that performs `jmp rbx` - to restore the original call.
-        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables).context(s!("JMP RBX gadget not found"))?;
+        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables)
+            .context(s!("JMP RBX gadget not found"))?;
         config.jmp_rbx_gadget = jmp_rbx_addr as *const c_void;
         config.jmp_rbx_frame_size = size as u64;
 
         // Preparing arguments
         let len = args.len().min(11);
         config.number_args = len as u32;
-
         for (i, &arg) in args.iter().take(len).enumerate() {
             match i {
                 0 => config.arg01 = arg,
@@ -335,19 +333,18 @@ impl Uwd {
         // Find a gadget `add rsp, 0x58; ret`.
         let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables)
             .context(s!("Add RSP gadget not found"))?;
-
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
         // Find a gadget that performs `jmp rbx` - to restore the original call.
-        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables).context(s!("JMP RBX gadget not found"))?;
+        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables)
+            .context(s!("JMP RBX gadget not found"))?;
         config.jmp_rbx_gadget = jmp_rbx_addr as *const c_void;
         config.jmp_rbx_frame_size = size as u64;
 
         // Preparing arguments
         let len = args.len().min(11);
         config.number_args = len as u32;
-
         for (i, &arg) in args.iter().take(len).enumerate() {
             match i {
                 0 => config.arg01 = arg,
