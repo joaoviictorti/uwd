@@ -6,10 +6,10 @@
 //! this crate brings low-level spoofing capabilities into an idiomatic Rust interface,
 //! with support for:
 //!
-//! - ✅ Call stack spoofing via **Desync** and **Synthetic** techniques  
-//! - ✅ Inline macros: [`spoof!`], [`spoof_synthetic!`], [`syscall!`], [`syscall_synthetic!`]  
-//! - ✅ Works with both **MSVC** and **GNU** toolchains (x64)  
-//! - ✅ `#[no_std]` support (with `alloc`)  
+//! - Call stack spoofing via **Desync** and **Synthetic** techniques  
+//! - Inline macros: [`spoof!`], [`spoof_synthetic!`], [`syscall!`], [`syscall_synthetic!`]  
+//! - Works with both **MSVC** and **GNU** toolchains (x64)  
+//! - `#[no_std]` support (with `alloc`)  
 //!
 //! ## Examples
 //!
