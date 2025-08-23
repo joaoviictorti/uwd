@@ -86,6 +86,12 @@
 //!     Ok(())
 //! }
 //! ```
+//! 
+//! # More Information
+//!
+//! For updates, usage guides, and examples, visit the [repository].
+//!
+//! [repository]: https://github.com/joaoviictorti/uwd
 
 #![no_std]
 #![allow(
