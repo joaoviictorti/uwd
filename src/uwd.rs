@@ -150,10 +150,8 @@ impl Uwd {
         }
 
         // Prevent calling a null function unless it's a syscall
-        if let SpoofKind::Function = kind {
-            if addr.is_null() {
-                bail!(s!("Null function address"));
-            }
+        if let SpoofKind::Function = kind && addr.is_null() {
+            bail!(s!("Null function address"));
         }
 
         // Preparing the `Config` structure for spoofing
@@ -269,10 +267,8 @@ impl Uwd {
         }
 
         // Prevent calling a null function unless it's a syscall
-        if let SpoofKind::Function = kind {
-            if addr.is_null() {
-                bail!(s!("Null function address"));
-            }
+        if let SpoofKind::Function = kind && addr.is_null() {
+            bail!(s!("Null function address"));
         }
 
         // Preparing the `Config` structure for spoofing

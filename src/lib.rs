@@ -1,6 +1,9 @@
 #![no_std]
-#![allow(clippy::doc_overindented_list_items)]
 #![doc = include_str!("../README.md")]
+#![allow(
+    clippy::doc_overindented_list_items,
+    clippy::collapsible_if
+)]
 
 extern crate alloc;
 
