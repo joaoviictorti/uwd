@@ -494,7 +494,6 @@ impl Uwd {
 
             // Calculate the size of the BaseThreadInitThunk function
             let pe_kernel32 = PE::parse(kernel32);
-            let base_addr = base_thread as usize;
             let size = pe_kernel32.unwind().function_size(base_thread)? as usize;
 
             // Access the TEB and stack limits
@@ -503,6 +502,7 @@ impl Uwd {
             let stack_limit = (*teb).Reserved1[2] as usize;
 
             // Stack scanning begins
+            let base_addr = base_thread as usize;
             let mut rsp = stack_base - 8;
             while rsp >= stack_limit {
                 let val = (rsp as *const usize).read();
@@ -631,7 +631,12 @@ pub mod internal {
     /// * `Ok(*mut c_void)` — On success, returns the result of the spoofed call.
     /// * `Err(anyhow::Error)` — If the spoofing setup fails or the target is invalid.
     #[inline(always)]
-    pub fn uwd_entry(addr: *mut c_void, kind: SpoofKind<'_>, args: &[*const c_void], synthetic: bool) -> Result<*mut c_void> {
+    pub fn uwd_entry(
+        addr: *mut c_void, 
+        kind: SpoofKind<'_>, 
+        args: &[*const c_void], 
+        synthetic: bool
+    ) -> Result<*mut c_void> {
         match kind {
             SpoofKind::Function => {
                 if synthetic {
