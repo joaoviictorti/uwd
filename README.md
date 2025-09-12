@@ -41,7 +41,7 @@ The macros `spoof!` / `spoof_synthetic!` and `syscall!` / `syscall_synthetic!` a
 
 This example shows how to spawn `calc.exe` using a spoofed call stack. We call `WinExec` twice once using the Desync technique, and again using the Synthetic one.
 
-```rs
+```rust
 use dinvk::{GetModuleHandle, GetProcAddress};
 use uwd::{spoof, spoof_synthetic};
 
@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 This example performs a indirect system call to `NtAllocateVirtualMemory` with a spoofed call stack.
 
-```rs
+```rust
 use std::{ffi::c_void, ptr::null_mut};
 use dinvk::NT_SUCCESS;
 use uwd::{syscall, syscall_synthetic, AsUwd};
@@ -108,7 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Additional Resources
 
-For more examples, check the [examples](/examples) folder in the repository.
+For more examples, check the [examples](https://github.com/joaoviictorti/uwd/tree/main/examples) folder in the repository.
 
 ## References
 
@@ -126,4 +126,4 @@ Special thanks to:
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](/LICENSE) file for details.
+This project is licensed under the MIT License. See the [LICENSE](https://github.com/joaoviictorti/uwd/tree/main/LICENSE) file for details.
