@@ -26,7 +26,7 @@ fn test_win_exec_synthetic() -> Result<(), Box<dyn core::error::Error>> {
 
     // 0:000> bp kernel32!WinExec "k ; g"
     for _ in 0..50 {
-        uwd::spoof_synthetic!(win_exec, cmd.as_ptr(), 1)?;
+        uwd::spoof!(win_exec, cmd.as_ptr(), 1)?;
     }
 
     Ok(())

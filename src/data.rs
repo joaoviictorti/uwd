@@ -116,8 +116,6 @@ impl PartialEq<usize> for Registers {
 }
 
 /// Union representing a single unwind operation code.
-///
-/// May store either a direct frame offset or structured subfields.
 #[repr(C)]
 pub union UNWIND_CODE {
     /// Offset into the stack frame for the operation.
@@ -129,9 +127,6 @@ pub union UNWIND_CODE {
 
 bitfield::bitfield! {
     /// Bitfield representation of an unwind code entry.
-    ///
-    /// Combines the `UnwindOp` (operation) and `OpInfo` (details), as well as
-    /// the `CodeOffset` where the operation occurs.
     #[repr(C)]
     #[derive(Debug, Clone, Copy)]
     pub struct UNWIND_CODE_0(u16);
@@ -139,7 +134,7 @@ bitfield::bitfield! {
     /// Byte offset from the start of the prologue where this operation is applied.
     pub u8, CodeOffset, SetCodeOffset: 7, 0;
 
-    /// The unwind operation code (e.g., `UWOP_PUSH_NONVOL`).
+    /// The unwind operation code.
     pub u8, UnwindOp, SetUnwindOp: 11, 8;
 
     /// Additional operation-specific information.
@@ -152,37 +147,33 @@ pub union UNWIND_INFO_0 {
     /// Address of the exception handler (RVA).
     pub ExceptionHandler: u32,
 
-    /// Address of a chained function entry (for nested functions).
+    /// Address of a chained function entry.
     pub FunctionEntry: u32,
 }
 
 bitfield::bitfield! {
     /// Combines the `Version` and `Flags` fields in a compact format.
-    ///
-    /// Stored as a single byte in `UNWIND_INFO`.
     #[repr(C)]
     #[derive(Debug, Clone, Copy)]
     pub struct UNWIND_VERSION_FLAGS(u8);
 
-    /// Unwind info format version (3 bits).
+    /// Unwind info format version.
     pub u8, Version, SetVersion: 2, 0;
 
-    /// Unwind flags (5 bits).
+    /// Unwind flags.
     pub u8, Flags, SetFlags: 7, 3;
 }
 
 bitfield::bitfield! {
     /// Compact representation of frame register and offset fields.
-    ///
-    /// Used for establishing frame base registers during unwinding.
     #[repr(C)]
     #[derive(Debug, Clone, Copy)]
     pub struct UNWIND_FRAME_INFO(u8);
 
-    /// The register used as the frame pointer (if any).
+    /// The register used as the frame pointer.
     pub u8, FrameRegister, SetFrameRegister: 3, 0;
 
-    /// Offset from the stack pointer to the frame pointer (in 16-byte units).
+    /// Offset from the stack pointer to the frame pointer.
     pub u8, FrameOffset, SetFrameOffset: 7, 4;
 }
 

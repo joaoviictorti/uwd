@@ -3,38 +3,43 @@ use core::{ffi::c_void, slice::from_raw_parts};
 use anyhow::{Context, Result, bail};
 use obfstr::{obfbytes as b, obfstring as s};
 use dinvk::{
-    GetModuleHandle, GetProcAddress, NtCurrentTeb,
+    GetModuleHandle, GetProcAddress,
     data::IMAGE_RUNTIME_FUNCTION,
     hash::{jenkins3, murmur3},
-    parse::PE,
-    shuffle,
+    parse::PE
 };
 
-use crate::data::{
+use super::data::{
     Config, Registers,
     UNWIND_OP_CODES::{self, *},
 };
-use crate::data::{
+use super::data::{
     UNW_FLAG_CHAININFO,
     UNW_FLAG_EHANDLER,
     UNWIND_CODE,
     UNWIND_INFO,
 };
 
+#[cfg(feature = "desync")]
 unsafe extern "C" {
     /// Function responsible for Call Stack Spoofing (Desync)
     fn Spoof(config: &mut Config) -> *mut c_void;
-
-    /// Function responsible for Call Stack Spoofing (Synthetic)
-    fn SpoofSynthetic(config: &mut Config) -> *mut c_void;
 }
 
-/// Invokes the [`Uwd::spoof`] function with the target function address, using a desynchronized call stack.
+#[cfg(not(feature = "desync"))]
+unsafe extern "C" {
+    /// Function responsible for Call Stack Spoofing (Synthetic)
+    #[link_name = "SpoofSynthetic"]
+    fn Spoof(config: &mut Config) -> *mut c_void;
+}
+
+/// Invokes the function using a synthetic stack layout.
 ///
 /// # Arguments
 ///
-/// - `$addr`: A pointer to the function to spoof-call (typically a Windows API)
-/// - `$arg`: A list of arguments to be passed to the spoofed function (up to 11 maximum)
+/// - `$addr`: A pointer to the function to spoof-call.
+/// - `$arg`: A list of arguments to be passed to the spoofed function (up to 11 maximum).
+#[cfg(not(feature = "desync"))]
 #[macro_export]
 macro_rules! spoof {
     ($addr:expr, $($arg:expr),+ $(,)?) => {
@@ -43,18 +48,18 @@ macro_rules! spoof {
                 $addr,
                 $crate::SpoofKind::Function,
                 &[$(::core::mem::transmute($arg as usize)),*],
-                false,
             )
         }
     };
 }
 
-/// Wraps a native Windows syscall using [`Uwd::spoof`] with desynchronized stack spoofing.
+/// Wraps a native Windows syscall with a simulated stack layout.
 ///
 /// # Arguments
 ///
 /// - `$name`: The name of the syscall as a string literal (e.g. `"NtWriteVirtualMemory"`).
 /// - `$arg`: A list of arguments to be passed to the spoofed function (up to 11 maximum)
+#[cfg(not(feature = "desync"))]
 #[macro_export]
 macro_rules! syscall {
     ($name:expr, $($arg:expr),* $(,)?) => {
@@ -63,47 +68,46 @@ macro_rules! syscall {
                 core::ptr::null_mut(),
                 $crate::SpoofKind::Syscall($name),
                 &[$(::core::mem::transmute($arg as usize)),*],
-                false,
             )
         }
     };
 }
 
-/// Invokes the [`Uwd::spoof_synthetic`] function using a synthetic stack layout.
+/// Invokes the function with the target function address, using a desynchronized call stack.
 ///
 /// # Arguments
 ///
 /// - `$addr`: A pointer to the function to spoof-call (typically a Windows API)
 /// - `$arg`: A list of arguments to be passed to the spoofed function (up to 11 maximum)
+#[cfg(feature = "desync")]
 #[macro_export]
-macro_rules! spoof_synthetic {
+macro_rules! spoof {
     ($addr:expr, $($arg:expr),+ $(,)?) => {
         unsafe {
             $crate::internal::uwd_entry(
                 $addr,
                 $crate::SpoofKind::Function,
                 &[$(::core::mem::transmute($arg as usize)),*],
-                true,
             )
         }
     };
 }
 
-/// Wraps a native Windows syscall using [`Uwd::spoof_synthetic`] with a simulated stack layout.
+/// Wraps a native Windows syscall with desynchronized stack spoofing.
 ///
 /// # Arguments
 ///
-/// - `$name`: The name of the syscall as a string literal (e.g. `"NtWriteVirtualMemory"`).
-/// - `$arg`: A list of arguments to be passed to the spoofed function (up to 11 maximum)
+/// - `$name`: The name of the syscall as a string literal.
+/// - `$arg`: A list of arguments to be passed to the spoofed function (up to 11 maximum).
+#[cfg(feature = "desync")]
 #[macro_export]
-macro_rules! syscall_synthetic {
+macro_rules! syscall {
     ($name:expr, $($arg:expr),* $(,)?) => {
         unsafe {
             $crate::internal::uwd_entry(
                 core::ptr::null_mut(),
                 $crate::SpoofKind::Syscall($name),
                 &[$(::core::mem::transmute($arg as usize)),*],
-                true,
             )
         }
     };
@@ -141,8 +145,9 @@ impl Uwd {
     ///
     /// # Returns
     ///
-    /// * `Ok(*mut c_void)` — On success, returns the result of the spoofed function or syscall.
-    /// * `Err(anyhow::Error)` — If any required setup step fails (e.g., gadgets missing, invalid arguments).
+    /// * `Ok(*mut c_void)` - On success, returns the result of the spoofed function or syscall.
+    /// * `Err` - If any required setup step fails (e.g., gadgets missing, invalid arguments).
+    #[cfg(feature = "desync")]
     fn spoof(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
         // Max 11 arguments allowed
         if args.len() > 11 {
@@ -258,9 +263,10 @@ impl Uwd {
     ///
     /// # Returns
     ///
-    /// * `Ok(*mut c_void)` — On success, returns the result of the spoofed function or syscall.
-    /// * `Err(anyhow::Error)` — If any required setup step fails (e.g., gadgets missing, invalid arguments).
-    fn spoof_synthetic(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
+    /// * `Ok(*mut c_void)` - On success, returns the result of the spoofed function or syscall.
+    /// * `Err` - If any required setup step fails (e.g., gadgets missing, invalid arguments).
+    #[cfg(not(feature = "desync"))]
+    fn spoof(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
         // Max 11 arguments allowed
         if args.len() > 11 {
             bail!(s!("Too many arguments"));
@@ -382,7 +388,7 @@ impl Uwd {
         }
 
         // Call the external spoofing routine with the full config.
-        Ok(unsafe { SpoofSynthetic(&mut config) })
+        Ok(unsafe { Spoof(&mut config) })
     }
 
     /// Searches for a specific instruction pattern inside a function’s code region,
@@ -395,8 +401,7 @@ impl Uwd {
     ///
     /// # Returns
     ///
-    /// * `Some(offset)` — The relative offset inside the function where the gadget was found.
-    /// * `None` — If the gadget pattern wasn't found.
+    /// * The relative offset inside the function where the gadget was found.
     ///
     /// # Notes
     ///
@@ -425,14 +430,13 @@ impl Uwd {
     ///
     /// # Arguments
     ///
-    /// * `module` — Base address of the loaded module to scan (e.g., `kernelbase.dll`).
-    /// * `pattern` — Byte sequence representing the target gadget (e.g., `[0xFF, 0x23]` for `jmp rbx`).
-    /// * `runtime_table` — Slice of `IMAGE_RUNTIME_FUNCTION` entries describing the module's valid code ranges.
+    /// * `module` - Base address of the loaded module to scan (e.g., `kernelbase.dll`).
+    /// * `pattern` - Byte sequence representing the target gadget (e.g., `[0xFF, 0x23]` for `jmp rbx`).
+    /// * `runtime_table` - Slice of `IMAGE_RUNTIME_FUNCTION` entries describing the module's valid code ranges.
     ///
     /// # Returns
     ///
-    /// * `Some((address, frame_size))` — Pointer to the start of the matching gadget and the associated stack frame size.
-    /// * `None` — If the gadget was not found.
+    /// * Pointer to the start of the matching gadget and the associated stack frame size.
     pub fn find_gadget(module: *mut c_void, pattern: &[u8], runtime_table: &[IMAGE_RUNTIME_FUNCTION]) -> Option<(*mut u8, u32)> {
         unsafe {
             let mut gadgets = Vec::new();
@@ -471,9 +475,8 @@ impl Uwd {
     ///
     /// # Returns
     ///
-    /// * `Some(usize)` — The stack address (`RSP`) where a return to `BaseThreadInitThunk` was found.
-    /// * `None` — If `kernel32.dll` or the target function could not be located, or
-    ///     if no such return address is found on the stack.
+    /// * The stack address (`RSP`) where a return to `BaseThreadInitThunk` was found.
+    #[cfg(feature = "desync")]
     fn find_base_thread_return_address() -> Option<usize> {
         unsafe {
             // Get handle for kernel32.dll
@@ -493,7 +496,7 @@ impl Uwd {
             let size = pe_kernel32.unwind().function_size(base_thread)? as usize;
 
             // Access the TEB and stack limits
-            let teb = NtCurrentTeb();
+            let teb = dinvk::NtCurrentTeb();
             let stack_base = (*teb).Reserved1[1] as usize;
             let stack_limit = (*teb).Reserved1[2] as usize;
 
@@ -525,8 +528,7 @@ impl Uwd {
     ///
     /// # Returns
     ///
-    /// * `Some(Prolog)` — If a suitable prologue is found, returns its metadata as a `Prolog` struct.
-    /// * `None` — If no valid unwindable prologue with a valid instruction offset is located.
+    /// * If a suitable prologue is found, returns its metadata as a `Prolog` struct.
     fn find_prolog(module_base: *mut c_void, runtime_table: &[IMAGE_RUNTIME_FUNCTION]) -> Option<Prolog> {
         let mut prologs = Vec::new();
         for runtime in runtime_table.iter() {
@@ -568,8 +570,7 @@ impl Uwd {
     ///
     /// # Returns
     ///
-    /// * `Some(Prolog)` — If a valid function is found with `push rbp` and a proper unwindable frame.
-    /// * `None` — If no appropriate frame pointer-based function is located.
+    /// * If a valid function is found with `push rbp` and a proper unwindable frame.
     fn find_push_rbp(module_base: *mut c_void, runtime_table: &[IMAGE_RUNTIME_FUNCTION]) -> Option<Prolog> {
         let mut prologs = Vec::new();
         for runtime in runtime_table.iter() {
@@ -619,34 +620,23 @@ pub mod internal {
     /// * `addr` - Target function pointer. For syscalls, this should be `null_mut()`.
     /// * `kind` - The spoofing mode: [`Function`](SpoofKind::Function) or [`Syscall`](SpoofKind::Syscall).
     /// * `args` - A fixed list of up to 11 arguments, cast to raw pointers.
-    /// * `synthetic` - If `true`, a fully synthetic (simulated) call stack is used.
-    ///     If `false`, spoofing reuses the real thread's stack.
     ///
     /// # Returns
     ///
-    /// * `Ok(*mut c_void)` — On success, returns the result of the spoofed call.
-    /// * `Err(anyhow::Error)` — If the spoofing setup fails or the target is invalid.
+    /// * `Ok(*mut c_void)` - On success, returns the result of the spoofed call.
+    /// * `Err` - If the spoofing setup fails or the target is invalid.
     #[inline(always)]
     pub fn uwd_entry(
         addr: *mut c_void, 
         kind: SpoofKind<'_>, 
         args: &[*const c_void], 
-        synthetic: bool
     ) -> Result<*mut c_void> {
         match kind {
             SpoofKind::Function => {
-                if synthetic {
-                    Uwd::spoof_synthetic(addr, args, SpoofKind::Function)
-                } else {
-                    Uwd::spoof(addr, args, SpoofKind::Function)
-                }
+                Uwd::spoof(addr, args, SpoofKind::Function)
             }
             SpoofKind::Syscall(name) => {
-                if synthetic {
-                    Uwd::spoof_synthetic(null_mut(), args, SpoofKind::Syscall(name))
-                } else {
-                    Uwd::spoof(null_mut(), args, SpoofKind::Syscall(name))
-                }
+                Uwd::spoof(null_mut(), args, SpoofKind::Syscall(name))
             }
         }
     }
@@ -665,10 +655,8 @@ impl StackFrame {
     ///
     /// # Returns
     ///
-    /// * `Some((rbp_offset, total_stack))` — If `RBP` is pushed or saved safely.  
-    ///     - `rbp_offset` — Offset (in bytes) from `RSP` where `RBP` is stored.  
-    ///     - `total_stack` — Total stack size allocated by the function.
-    /// * `None` — If `RBP` is not safely saved or `RSP` is manipulated directly.
+    /// * Returns `(rbp_offset, total_stack)` if RBP is saved safely on the stack,  
+    ///   or nothing if it is not saved or RSP is manipulated directly.
     pub fn rbp_offset(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<(u32, u32)> {
         unsafe {
             let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
@@ -843,9 +831,8 @@ impl StackFrame {
     ///
     /// # Returns
     ///
-    /// * `Some((true, stack_size))` — If the frame is valid and uses `RBP` as frame pointer.  
-    /// * `Some((false, stack_size))` — If the frame has `setfp` but not `rbp`.  
-    /// * `None` — If the frame is unsafe for spoofing or uses invalid constructs.
+    /// * Returns `(uses_rbp, stack_size)` if the frame is valid and spoof-safe, 
+    ///   or nothing if the frame is unsafe or invalid.
     pub fn stack_frame(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<(bool, u32)> {
         unsafe {
             let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
@@ -1010,7 +997,6 @@ impl StackFrame {
     /// # Returns
     ///
     /// * Stack size in bytes if the frame is spoof-safe.
-    /// * Returns `0` if the frame is unsafe or unspoofable.
     pub fn ignoring_set_fpreg(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<u32> {
         unsafe {
             let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
@@ -1147,7 +1133,7 @@ impl StackFrame {
     }
 }
 
-/// Trait that allows casting any type to a raw pointer (`*const c_void` or `*mut c_void`).
+/// Trait that allows casting any type to a raw pointer.
 pub trait AsUwd {
     /// Casts an immutable reference to a `*const c_void`.
     fn as_uwd_const(&self) -> *const c_void;
@@ -1170,9 +1156,26 @@ impl<T> AsUwd for T {
 
 /// Specifies the type of spoof being performed
 pub enum SpoofKind<'a> {
-    /// Spoofs a call to a regular function pointer (e.g. a Windows API)
+    /// Spoofs a call to a regular function pointer.
     Function,
 
-    /// Spoofs a native system call using its name (e.g. `"NtAllocateVirtualMemory"`).
+    /// Spoofs a native system call using its name.
     Syscall(&'a str),
+}
+
+/// Randomly shuffles the elements of a mutable slice in-place using a pseudo-random
+/// number generator seeded by the CPU's timestamp counter (`rdtsc`).
+///
+/// The shuffling algorithm is a variant of the Fisher-Yates shuffle.
+///
+/// # Arguments
+/// 
+/// * `list` — A mutable slice of elements to be shuffled.
+fn shuffle<T>(list: &mut [T]) {
+    let mut seed = unsafe { core::arch::x86_64::_rdtsc() };
+    for i in (1..list.len()).rev() {
+        seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+        let j = seed as usize % (i + 1);
+        list.swap(i, j);
+    }
 }

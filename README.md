@@ -16,8 +16,10 @@ Inspired by [SilentMoonwalk](https://github.com/klezVirus/SilentMoonwalk), this 
 
 - ✅ Call stack spoofing via `Synthetic` and `Desync`.
 - ✅ Compatible with both `MSVC` and `GNU` toolchains (**x64**).
-- ✅ Inline macros: `spoof!`, `spoof_synthetic!`, `syscall!`, `syscall_synthetic!`.
+- ✅ Inline macros: `spoof!` / `syscall!`.
 - ✅ Supports `#[no_std]` environments (with `alloc`).
+
+To enable Desync mode, activate the `desync` feature in your project, the macros will automatically use Desync behavior when the feature is enabled.
 
 ## Getting started
 
@@ -35,15 +37,13 @@ You can spoof:
 * Normal functions (like `VirtualAlloc`, `WinExec`, etc.)
 * Native syscalls with automatic SSN and stub resolution (like `NtAllocateVirtualMemory`)
 
-The macros `spoof!` / `spoof_synthetic!` and `syscall!` / `syscall_synthetic!` abstract all the complexity.
-
 ### Spoofing WinExec
 
 This example shows how to spawn `calc.exe` using a spoofed call stack. We call `WinExec` twice once using the Desync technique, and again using the Synthetic one.
 
 ```rust
 use dinvk::{GetModuleHandle, GetProcAddress};
-use uwd::{spoof, spoof_synthetic};
+use uwd::spoof;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Resolves addresses of the WinAPI functions to be used
@@ -51,18 +51,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let win_exec = GetProcAddress(kernel32, "WinExec", None);
     
     // Execute command with `WinExec`
-    // Call Stack Spoofing (Desync)
     let cmd = c"calc.exe";
     let mut result = spoof!(win_exec, cmd.as_ptr(), 1)?;
     if result.is_null() {
         eprintln!("WinExec Failed");
-        return Ok(());
-    }
-
-    // Call Stack Spoofing (Synthetic)
-    result = spoof_synthetic!(win_exec, cmd.as_ptr(), 1)?;
-    if result.is_null() {
-        eprintln!("WinExec Failed [2]");
         return Ok(());
     }
 
@@ -77,26 +69,15 @@ This example performs a indirect system call to `NtAllocateVirtualMemory` with a
 ```rust
 use std::{ffi::c_void, ptr::null_mut};
 use dinvk::NT_SUCCESS;
-use uwd::{syscall, syscall_synthetic, AsUwd};
+use uwd::{syscall, AsUwd};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Running indirect syscall with Call Stack Spoofing (Desync)
+    // Running indirect syscall with Call Stack Spoofing
     let mut addr = null_mut::<c_void>();
     let mut size = (1 << 12) as usize;
     let mut status = syscall!("NtAllocateVirtualMemory", -1isize, addr.as_uwd_mut(), 0, size.as_uwd_mut(), 0x3000, 0x04)? as i32;
     if !NT_SUCCESS(status) {
-        eprintln!("NtAllocateVirtualMemory Failed With Status: {status:#X}");
-        return Ok(())
-    }
-
-    println!("[+] Address allocated: {:?}", addr);
-
-    // Running indirect syscall with Call Stack Spoofing (Synthetic)
-    let mut addr = null_mut::<c_void>();
-    let mut size = (1 << 12) as usize;
-    status = syscall_synthetic!("NtAllocateVirtualMemory", -1isize, addr.as_uwd_mut(), 0, size.as_uwd_mut(), 0x3000, 0x04)? as i32;
-    if !NT_SUCESS(status) {
-        eprintln!("NtAllocateVirtualMemory Failed With Status [2]: {status:#X}");
+        eprintln!("[-] NtAllocateVirtualMemory Failed With Status: {status:#X}");
         return Ok(())
     }
 
