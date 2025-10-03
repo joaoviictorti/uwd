@@ -167,13 +167,13 @@ impl Uwd {
 
         // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices.
         let pe = PE::parse(kernelbase);
-        let tables = pe
-            .unwind()
-            .entries()
-            .context(s!("Failed to read IMAGE_RUNTIME_FUNCTION entries from .pdata section"))?;
+        let tables = pe.unwind().entries().context(s!(
+            "Failed to read IMAGE_RUNTIME_FUNCTION entries from .pdata section"
+        ))?;
 
         // Locate a return address from BaseThreadInitThunk on the current stack.
-        config.return_address = Self::find_base_thread_return_address().context(s!("Return address not found"))? as *const c_void;
+        config.return_address = Self::find_base_thread_return_address()
+            .context(s!("Return address not found"))? as *const c_void;
 
         // First frame: a normal function with a clean prologue
         let first_prolog = Self::find_prolog(kernelbase, tables).context(s!("First prolog not found"))?;
@@ -189,12 +189,14 @@ impl Uwd {
         // Find a gadget `add rsp, 0x58; ret`.
         let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables)
             .context(s!("Add RSP gadget not found"))?;
+
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
         // Find a gadget that performs `jmp rbx` - to restore the original call.
         let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables)
             .context(s!("JMP RBX gadget not found"))?;
+
         config.jmp_rbx_gadget = jmp_rbx_addr as *const c_void;
         config.jmp_rbx_frame_size = size as u64;
 
@@ -315,19 +317,26 @@ impl Uwd {
             .context(s!("BaseThreadInitThunk unwind info not found"))?;
 
         // Recovering the stack size of target apis
-        let rtl_user_size = StackFrame::ignoring_set_fpreg(ntdll, rtl_user_runtime).context(s!("RtlUserThreadStart stack size not found"))?;
-        let base_thread_size = StackFrame::ignoring_set_fpreg(kernel32, base_thread_runtime).context(s!("BaseThreadInitThunk stack size not found"))?;
+        let rtl_user_size = StackFrame::ignoring_set_fpreg(ntdll, rtl_user_runtime)
+            .context(s!("RtlUserThreadStart stack size not found"))?;
+        
+        let base_thread_size = StackFrame::ignoring_set_fpreg(kernel32, base_thread_runtime)
+            .context(s!("BaseThreadInitThunk stack size not found"))?;
 
         config.rtl_user_thread_size = rtl_user_size as u64;
         config.base_thread_size = base_thread_size as u64;
 
         // First frame: a normal function with a clean prologue
-        let first_prolog = Self::find_prolog(kernelbase, tables).context(s!("First prolog not found"))?;
+        let first_prolog = Self::find_prolog(kernelbase, tables)
+            .context(s!("First prolog not found"))?;
+        
         config.first_frame_fp = (first_prolog.frame + first_prolog.offset as u64) as *const c_void;
         config.first_frame_size = first_prolog.stack_size as u64;
 
         // Second frame: looks specifically for a prologue with `push rbp`.
-        let second_prolog = Self::find_push_rbp(kernelbase, tables).context(s!("Second prolog not found"))?;
+        let second_prolog = Self::find_push_rbp(kernelbase, tables)
+            .context(s!("Second prolog not found"))?;
+        
         config.second_frame_fp = (second_prolog.frame + second_prolog.offset as u64) as *const c_void;
         config.second_frame_size = second_prolog.stack_size as u64;
         config.rbp_stack_offset = second_prolog.rbp_offset as u64;
@@ -335,12 +344,14 @@ impl Uwd {
         // Find a gadget `add rsp, 0x58; ret`.
         let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables)
             .context(s!("Add RSP gadget not found"))?;
+        
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
         // Find a gadget that performs `jmp rbx` - to restore the original call.
         let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables)
             .context(s!("JMP RBX gadget not found"))?;
+        
         config.jmp_rbx_gadget = jmp_rbx_addr as *const c_void;
         config.jmp_rbx_frame_size = size as u64;
 
@@ -430,14 +441,18 @@ impl Uwd {
     ///
     /// # Arguments
     ///
-    /// * `module` - Base address of the loaded module to scan (e.g., `kernelbase.dll`).
-    /// * `pattern` - Byte sequence representing the target gadget (e.g., `[0xFF, 0x23]` for `jmp rbx`).
+    /// * `module` - Base address of the loaded module to scan.
+    /// * `pattern` - Byte sequence representing the target gadget.
     /// * `runtime_table` - Slice of `IMAGE_RUNTIME_FUNCTION` entries describing the module's valid code ranges.
     ///
     /// # Returns
     ///
     /// * Pointer to the start of the matching gadget and the associated stack frame size.
-    pub fn find_gadget(module: *mut c_void, pattern: &[u8], runtime_table: &[IMAGE_RUNTIME_FUNCTION]) -> Option<(*mut u8, u32)> {
+    pub fn find_gadget(
+        module: *mut c_void, 
+        pattern: &[u8], 
+        runtime_table: &[IMAGE_RUNTIME_FUNCTION]
+    ) -> Option<(*mut u8, u32)> {
         unsafe {
             let mut gadgets = Vec::new();
             for runtime in runtime_table.iter() {
@@ -524,7 +539,7 @@ impl Uwd {
     /// # Arguments
     ///
     /// * `module_base` - Base address of the module being analyzed.
-    /// * `runtime_table` - Slice containing the exception directory entries (`IMAGE_RUNTIME_FUNCTION`).
+    /// * `runtime_table` - Slice containing the exception directory entries.
     ///
     /// # Returns
     ///
@@ -566,7 +581,7 @@ impl Uwd {
     /// # Arguments
     ///
     /// * `module_base` - Base address of the loaded module.
-    /// * `runtime_table` - Slice of entries from the exception directory (`IMAGE_RUNTIME_FUNCTION`).
+    /// * `runtime_table` - Slice of entries from the exception directory.
     ///
     /// # Returns
     ///
@@ -1170,7 +1185,7 @@ pub enum SpoofKind<'a> {
 ///
 /// # Arguments
 /// 
-/// * `list` — A mutable slice of elements to be shuffled.
+/// * `list` - A mutable slice of elements to be shuffled.
 fn shuffle<T>(list: &mut [T]) {
     let mut seed = unsafe { core::arch::x86_64::_rdtsc() };
     for i in (1..list.len()).rev() {
