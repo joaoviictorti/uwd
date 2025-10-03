@@ -1,14 +1,15 @@
 use alloc::{string::String, vec::Vec};
-use core::{ffi::c_void, slice::from_raw_parts};
+use core::ffi::c_void;
 use anyhow::{Context, Result, bail};
 use obfstr::{obfbytes as b, obfstring as s};
 use dinvk::{
     GetModuleHandle, GetProcAddress,
     data::IMAGE_RUNTIME_FUNCTION,
-    hash::{jenkins3, murmur3},
+    hash::murmur3,
     parse::PE
 };
 
+use super::util::*;
 use super::data::{
     Config, Registers,
     UNWIND_OP_CODES::{self, *},
@@ -71,22 +72,6 @@ macro_rules! syscall {
     };
 }
 
-/// Represents metadata extracted from a function's prologue used for call stack spoofing.
-#[derive(Copy, Clone)]
-struct Prolog {
-    /// Address of the function's entry point or relevant instruction
-    frame: u64,
-
-    /// Total stack space reserved by the function (in bytes)
-    stack_size: u32,
-
-    /// Offset inside the function where a specific instruction pattern is found
-    offset: u32,
-
-    /// Offset in the stack where `rbp` is pushed
-    rbp_offset: u32,
-}
-
 /// Root structure responsible for setting up and orchestrating the call stack spoofing process.
 pub struct Uwd;
 
@@ -123,36 +108,36 @@ impl Uwd {
         // Get the base address of kernelbase.dll
         let kernelbase = GetModuleHandle(2737729883u32, Some(murmur3));
 
-        // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices.
+        // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices
         let pe = PE::parse(kernelbase);
         let tables = pe.unwind().entries().context(s!(
             "Failed to read IMAGE_RUNTIME_FUNCTION entries from .pdata section"
         ))?;
 
-        // Locate a return address from BaseThreadInitThunk on the current stack.
-        config.return_address = Self::find_base_thread_return_address()
+        // Locate a return address from BaseThreadInitThunk on the current stack
+        config.return_address = find_base_thread_return_address()
             .context(s!("Return address not found"))? as *const c_void;
 
         // First frame: a normal function with a clean prologue
-        let first_prolog = Self::find_prolog(kernelbase, tables).context(s!("First prolog not found"))?;
+        let first_prolog = Prolog::find_prolog(kernelbase, tables).context(s!("First prolog not found"))?;
         config.first_frame_fp = (first_prolog.frame + first_prolog.offset as u64) as *const c_void;
         config.first_frame_size = first_prolog.stack_size as u64;
 
-        // Second frame: looks specifically for a prologue with `push rbp`.
-        let second_prolog = Self::find_push_rbp(kernelbase, tables).context(s!("Second prolog not found"))?;
+        // Second frame: looks specifically for a prologue with `push rbp`
+        let second_prolog = Prolog::find_push_rbp(kernelbase, tables).context(s!("Second prolog not found"))?;
         config.second_frame_fp = (second_prolog.frame + second_prolog.offset as u64) as *const c_void;
         config.second_frame_size = second_prolog.stack_size as u64;
         config.rbp_stack_offset = second_prolog.rbp_offset as u64;
 
-        // Find a gadget `add rsp, 0x58; ret`.
-        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables)
+        // Find a gadget `add rsp, 0x58; ret`
+        let (add_rsp_addr, size) = find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables)
             .context(s!("Add RSP gadget not found"))?;
 
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
-        // Find a gadget that performs `jmp rbx` - to restore the original call.
-        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables)
+        // Find a gadget that performs `jmp rbx` - to restore the original call
+        let (jmp_rbx_addr, size) = find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables)
             .context(s!("JMP RBX gadget not found"))?;
 
         config.jmp_rbx_gadget = jmp_rbx_addr as *const c_void;
@@ -207,7 +192,7 @@ impl Uwd {
             }
         }
 
-        // Call the external spoofing routine with the full config.
+        // Call the external spoofing routine
         Ok(unsafe { Spoof(&mut config) })
     }
 
@@ -243,7 +228,7 @@ impl Uwd {
         // Get the base address of kernelbase.dll
         let kernelbase = GetModuleHandle(2737729883u32, Some(murmur3));
 
-        // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices.
+        // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices
         let pe_kernelbase = PE::parse(kernelbase);
         let tables = pe_kernelbase.unwind().entries().context(s!(
             "Failed to read IMAGE_RUNTIME_FUNCTION entries from .pdata section"
@@ -256,8 +241,8 @@ impl Uwd {
         }
 
         let kernel32 = GetModuleHandle(2808682670u32, Some(murmur3));
-        let rlt_user_addr = GetProcAddress(ntdll, 3761471966u32, Some(jenkins3));
-        let base_thread_addr = GetProcAddress(kernel32, 4073232152u32, Some(jenkins3));
+        let rlt_user_addr = GetProcAddress(ntdll, 1578834099u32, Some(murmur3));
+        let base_thread_addr = GetProcAddress(kernel32, 4083630997u32, Some(murmur3));
         config.rtl_user_addr = rlt_user_addr;
         config.base_thread_addr = base_thread_addr;
 
@@ -285,29 +270,29 @@ impl Uwd {
         config.base_thread_size = base_thread_size as u64;
 
         // First frame: a normal function with a clean prologue
-        let first_prolog = Self::find_prolog(kernelbase, tables)
+        let first_prolog = Prolog::find_prolog(kernelbase, tables)
             .context(s!("First prolog not found"))?;
         
         config.first_frame_fp = (first_prolog.frame + first_prolog.offset as u64) as *const c_void;
         config.first_frame_size = first_prolog.stack_size as u64;
 
-        // Second frame: looks specifically for a prologue with `push rbp`.
-        let second_prolog = Self::find_push_rbp(kernelbase, tables)
+        // Second frame: looks specifically for a prologue with `push rbp`
+        let second_prolog = Prolog::find_push_rbp(kernelbase, tables)
             .context(s!("Second prolog not found"))?;
         
         config.second_frame_fp = (second_prolog.frame + second_prolog.offset as u64) as *const c_void;
         config.second_frame_size = second_prolog.stack_size as u64;
         config.rbp_stack_offset = second_prolog.rbp_offset as u64;
 
-        // Find a gadget `add rsp, 0x58; ret`.
-        let (add_rsp_addr, size) = Self::find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables)
+        // Find a gadget `add rsp, 0x58; ret`
+        let (add_rsp_addr, size) = find_gadget(kernelbase, b!(&[0x48, 0x83, 0xC4, 0x58, 0xC3]), tables)
             .context(s!("Add RSP gadget not found"))?;
         
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
-        // Find a gadget that performs `jmp rbx` - to restore the original call.
-        let (jmp_rbx_addr, size) = Self::find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables)
+        // Find a gadget that performs `jmp rbx` - to restore the original call
+        let (jmp_rbx_addr, size) = find_gadget(kernelbase, b!(&[0xFF, 0x23]), tables)
             .context(s!("JMP RBX gadget not found"))?;
         
         config.jmp_rbx_gadget = jmp_rbx_addr as *const c_void;
@@ -356,228 +341,8 @@ impl Uwd {
             }
         }
 
-        // Call the external spoofing routine with the full config.
+        // Call the external spoofing routine
         Ok(unsafe { Spoof(&mut config) })
-    }
-
-    /// Searches for a specific instruction pattern inside a function’s code region,
-    /// returning the relative offset from the function's start if found.
-    ///
-    /// # Arguments
-    ///
-    /// * `module` - Base address of the module containing the target function.
-    /// * `runtime` - A reference to the IMAGE_RUNTIME_FUNCTION describing the function.
-    ///
-    /// # Returns
-    ///
-    /// * The relative offset inside the function where the gadget was found.
-    ///
-    /// # Notes
-    ///
-    /// The pattern being searched is a `call qword ptr [rip+0]`, encoded as `48 FF 15 00 00 00 00`,
-    /// and the function returns the offset *after* the full instruction (+7).
-    fn find_valid_instruction_offset(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<u32> {
-        let start = module as u64 + runtime.BeginAddress as u64;
-        let end = module as u64 + runtime.EndAddress as u64;
-        let size = end - start;
-
-        // Find a gadget `call qword ptr [rip+0]`
-        let pattern = b!(&[0x48, 0xFF, 0x15]);
-        unsafe {
-            let bytes = from_raw_parts(start as *const u8, size as usize);
-            if let Some(pos) = memchr::memmem::find(bytes, pattern) {
-                // Returns valid RVA: offset of the gadget inside the function
-                return Some((pos + 7) as u32);
-            }
-        }
-
-        None
-    }
-
-    /// Scans the memory of a module for a specific byte pattern, constrained to
-    /// valid runtime functions with corresponding unwind info.
-    ///
-    /// # Arguments
-    ///
-    /// * `module` - Base address of the loaded module to scan.
-    /// * `pattern` - Byte sequence representing the target gadget.
-    /// * `runtime_table` - Slice of `IMAGE_RUNTIME_FUNCTION` entries describing the module's valid code ranges.
-    ///
-    /// # Returns
-    ///
-    /// * Pointer to the start of the matching gadget and the associated stack frame size.
-    pub fn find_gadget(
-        module: *mut c_void, 
-        pattern: &[u8], 
-        runtime_table: &[IMAGE_RUNTIME_FUNCTION]
-    ) -> Option<(*mut u8, u32)> {
-        unsafe {
-            let mut gadgets = Vec::new();
-            for runtime in runtime_table.iter() {
-                let start = module as u64 + runtime.BeginAddress as u64;
-                let end = module as u64 + runtime.EndAddress as u64;
-                let size = end - start;
-
-                let bytes = from_raw_parts(start as *const u8, size as usize);
-                if let Some(pos) = memchr::memmem::find(bytes, pattern) {
-                    let addr = (start as *mut u8).add(pos);
-                    if let Some(size) = StackFrame::ignoring_set_fpreg(module, runtime) {
-                        if size != 0 {
-                            gadgets.push((addr, size))
-                        }
-                    }
-                }
-            }
-
-            // No gadget found? return None
-            if gadgets.is_empty() {
-                return None;
-            }
-
-            // Randomizes the order of possible frames found (if there is more than one),
-            // helps to shuffle patterns and reduce repetition-based heuristics
-            shuffle(&mut gadgets);
-
-            // Take the first occurrence
-            gadgets.first().copied()
-        }
-    }
-
-    /// Scans the current thread's stack to locate the return address that falls within
-    /// the range of the `BaseThreadInitThunk` function from `kernel32.dll`.
-    ///
-    /// # Returns
-    ///
-    /// * The stack address (`RSP`) where a return to `BaseThreadInitThunk` was found.
-    #[cfg(feature = "desync")]
-    fn find_base_thread_return_address() -> Option<usize> {
-        unsafe {
-            // Get handle for kernel32.dll
-            let kernel32 = GetModuleHandle(2808682670u32, Some(murmur3));
-            if kernel32.is_null() {
-                return None;
-            }
-
-            // Resolves the address of the BaseThreadInitThunk function
-            let base_thread = GetProcAddress(kernel32, 4073232152u32, Some(jenkins3));
-            if base_thread.is_null() {
-                return None;
-            }
-
-            // Calculate the size of the BaseThreadInitThunk function
-            let pe_kernel32 = PE::parse(kernel32);
-            let size = pe_kernel32.unwind().function_size(base_thread)? as usize;
-
-            // Access the TEB and stack limits
-            let teb = dinvk::NtCurrentTeb();
-            let stack_base = (*teb).Reserved1[1] as usize;
-            let stack_limit = (*teb).Reserved1[2] as usize;
-
-            // Stack scanning begins
-            let base_addr = base_thread as usize;
-            let mut rsp = stack_base - 8;
-            while rsp >= stack_limit {
-                let val = (rsp as *const usize).read();
-
-                // Checks if the return is in the BaseThreadInitThunk range
-                if val >= base_addr && val < base_addr + size {
-                    return Some(rsp);
-                }
-
-                rsp -= 8;
-            }
-
-            None
-        }
-    }
-
-    /// Scans the `RUNTIME_FUNCTION` table to locate the first function with a prologue
-    /// considered safe and predictable for call stack spoofing.
-    ///
-    /// # Arguments
-    ///
-    /// * `module_base` - Base address of the module being analyzed.
-    /// * `runtime_table` - Slice containing the exception directory entries.
-    ///
-    /// # Returns
-    ///
-    /// * If a suitable prologue is found, returns its metadata as a `Prolog` struct.
-    fn find_prolog(module_base: *mut c_void, runtime_table: &[IMAGE_RUNTIME_FUNCTION]) -> Option<Prolog> {
-        let mut prologs = Vec::new();
-        for runtime in runtime_table.iter() {
-            if let Some((true, stack_size)) = StackFrame::stack_frame(module_base, runtime) {
-                if let Some(offset) = Self::find_valid_instruction_offset(module_base, runtime) {
-                    let frame = module_base as u64 + runtime.BeginAddress as u64;
-                    let prolog = Prolog {
-                        frame,
-                        stack_size,
-                        offset,
-                        rbp_offset: 0,
-                    };
-
-                    prologs.push(prolog);
-                }
-            }
-        }
-
-        // No prologue found? return None
-        if prologs.is_empty() {
-            return None;
-        }
-
-        // Randomizes the order of possible frames found (if there is more than one),
-        // helps to shuffle patterns and reduce repetition-based heuristics
-        shuffle(&mut prologs);
-
-        // Take the first occurrence
-        prologs.first().copied()
-    }
-
-    /// Searches for the first function in the exception directory that contains a classic
-    /// `push rbp` prologue, which is typically associated with frame pointer-based stack frames.
-    ///
-    /// # Arguments
-    ///
-    /// * `module_base` - Base address of the loaded module.
-    /// * `runtime_table` - Slice of entries from the exception directory.
-    ///
-    /// # Returns
-    ///
-    /// * If a valid function is found with `push rbp` and a proper unwindable frame.
-    fn find_push_rbp(module_base: *mut c_void, runtime_table: &[IMAGE_RUNTIME_FUNCTION]) -> Option<Prolog> {
-        let mut prologs = Vec::new();
-        for runtime in runtime_table.iter() {
-            if let Some((rbp_offset, stack_size)) = StackFrame::rbp_offset(module_base, runtime) {
-                if rbp_offset != 0 && stack_size != 0 && stack_size > rbp_offset {
-                    if let Some(offset) = Self::find_valid_instruction_offset(module_base, runtime) {
-                        let frame = module_base as u64 + runtime.BeginAddress as u64;
-                        let prolog = Prolog {
-                            frame,
-                            stack_size,
-                            offset,
-                            rbp_offset,
-                        };
-
-                        prologs.push(prolog);
-                    }
-                }
-            }
-        }
-
-        // No prologue found? return None
-        if prologs.is_empty() {
-            return None;
-        }
-
-        // The first pop rbp frame is not suitable on most windows versions
-        prologs.remove(0);
-
-        // Randomizes the order of possible frames found (if there is more than one),
-        // helps to shuffle patterns and reduce repetition-based heuristics
-        shuffle(&mut prologs);
-
-        // Take the first occurrence
-        prologs.first().copied()
     }
 }
 
@@ -615,6 +380,115 @@ pub mod internal {
     }
 }
 
+
+/// Represents metadata extracted from a function's prologue used for call stack spoofing.
+#[derive(Copy, Clone)]
+struct Prolog {
+    /// Address of the function's entry point or relevant instruction
+    frame: u64,
+
+    /// Total stack space reserved by the function (in bytes)
+    stack_size: u32,
+
+    /// Offset inside the function where a specific instruction pattern is found
+    offset: u32,
+
+    /// Offset in the stack where `rbp` is pushed
+    rbp_offset: u32,
+}
+
+
+impl Prolog {
+    /// Scans the `RUNTIME_FUNCTION` table to locate the first function with a prologue
+    /// considered safe and predictable for call stack spoofing.
+    ///
+    /// # Arguments
+    ///
+    /// * `module_base` - Base address of the module being analyzed.
+    /// * `runtime_table` - Slice containing the exception directory entries.
+    ///
+    /// # Returns
+    ///
+    /// If a suitable prologue is found, returns its metadata as a `Prolog` struct.
+    fn find_prolog(module_base: *mut c_void, runtime_table: &[IMAGE_RUNTIME_FUNCTION]) -> Option<Self> {
+        let mut prologs = Vec::new();
+        for runtime in runtime_table.iter() {
+            if let Some((true, stack_size)) = StackFrame::stack_frame(module_base, runtime) {
+                if let Some(offset) = find_valid_instruction_offset(module_base, runtime) {
+                    let frame = module_base as u64 + runtime.BeginAddress as u64;
+                    let prolog = Prolog {
+                        frame,
+                        stack_size,
+                        offset,
+                        rbp_offset: 0,
+                    };
+
+                    prologs.push(prolog);
+                }
+            }
+        }
+
+        // No prologue found? return None
+        if prologs.is_empty() {
+            return None;
+        }
+
+        // Randomizes the order of possible frames found (if there is more than one),
+        // helps to shuffle patterns and reduce repetition-based heuristics
+        shuffle(&mut prologs);
+
+        // Take the first occurrence
+        prologs.first().copied()
+    }
+
+    /// Searches for the first function in the exception directory that contains a classic
+    /// `push rbp` prologue, which is typically associated with frame pointer-based stack frames.
+    ///
+    /// # Arguments
+    ///
+    /// * `module_base` - Base address of the loaded module.
+    /// * `runtime_table` - Slice of entries from the exception directory.
+    ///
+    /// # Returns
+    ///
+    /// If a valid function is found with `push rbp` and a proper unwindable frame.
+    fn find_push_rbp(module_base: *mut c_void, runtime_table: &[IMAGE_RUNTIME_FUNCTION]) -> Option<Self> {
+        let mut prologs = Vec::new();
+        for runtime in runtime_table.iter() {
+            if let Some((rbp_offset, stack_size)) = StackFrame::rbp_offset(module_base, runtime) {
+                if rbp_offset != 0 && stack_size != 0 && stack_size > rbp_offset {
+                    if let Some(offset) = find_valid_instruction_offset(module_base, runtime) {
+                        let frame = module_base as u64 + runtime.BeginAddress as u64;
+                        let prolog = Prolog {
+                            frame,
+                            stack_size,
+                            offset,
+                            rbp_offset,
+                        };
+
+                        prologs.push(prolog);
+                    }
+                }
+            }
+        }
+
+        // No prologue found? return None
+        if prologs.is_empty() {
+            return None;
+        }
+
+        // The first pop rbp frame is not suitable on most windows versions
+        prologs.remove(0);
+
+        // Randomizes the order of possible frames found (if there is more than one),
+        // helps to shuffle patterns and reduce repetition-based heuristics
+        shuffle(&mut prologs);
+
+        // Take the first occurrence
+        prologs.first().copied()
+    }
+}
+
 /// Represents a utility struct for stack frame analysis and spoofing logic.
 pub struct StackFrame;
 
@@ -628,8 +502,7 @@ impl StackFrame {
     ///
     /// # Returns
     ///
-    /// * Returns `(rbp_offset, total_stack)` if RBP is saved safely on the stack,  
-    ///   or nothing if it is not saved or RSP is manipulated directly.
+    /// If RBP is saved safely on the stack, or nothing if it is not saved or RSP is manipulated directly.
     pub fn rbp_offset(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<(u32, u32)> {
         unsafe {
             let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
@@ -804,8 +677,7 @@ impl StackFrame {
     ///
     /// # Returns
     ///
-    /// * Returns `(uses_rbp, stack_size)` if the frame is valid and spoof-safe, 
-    ///   or nothing if the frame is unsafe or invalid.
+    /// If the frame is valid and spoof-safe, or nothing if the frame is unsafe or invalid.
     pub fn stack_frame(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<(bool, u32)> {
         unsafe {
             let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
@@ -969,7 +841,7 @@ impl StackFrame {
     ///
     /// # Returns
     ///
-    /// * Stack size in bytes if the frame is spoof-safe.
+    /// Stack size in bytes if the frame is spoof-safe.
     pub fn ignoring_set_fpreg(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<u32> {
         unsafe {
             let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
@@ -1134,21 +1006,4 @@ pub enum SpoofKind<'a> {
 
     /// Spoofs a native system call using its name.
     Syscall(&'a str),
-}
-
-/// Randomly shuffles the elements of a mutable slice in-place using a pseudo-random
-/// number generator seeded by the CPU's timestamp counter (`rdtsc`).
-///
-/// The shuffling algorithm is a variant of the Fisher-Yates shuffle.
-///
-/// # Arguments
-/// 
-/// * `list` - A mutable slice of elements to be shuffled.
-fn shuffle<T>(list: &mut [T]) {
-    let mut seed = unsafe { core::arch::x86_64::_rdtsc() };
-    for i in (1..list.len()).rev() {
-        seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
-        let j = seed as usize % (i + 1);
-        list.swap(i, j);
-    }
 }

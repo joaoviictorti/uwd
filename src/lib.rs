@@ -6,5 +6,6 @@ extern crate alloc;
 
 mod data;
 mod uwd;
+mod util;
 
 pub use uwd::*;
