@@ -39,7 +39,6 @@ unsafe extern "C" {
 ///
 /// - `$addr`: A pointer to the function to spoof-call.
 /// - `$arg`: A list of arguments to be passed to the spoofed function (up to 11 maximum).
-#[cfg(not(feature = "desync"))]
 #[macro_export]
 macro_rules! spoof {
     ($addr:expr, $($arg:expr),+ $(,)?) => {
@@ -57,49 +56,8 @@ macro_rules! spoof {
 ///
 /// # Arguments
 ///
-/// - `$name`: The name of the syscall as a string literal (e.g. `"NtWriteVirtualMemory"`).
-/// - `$arg`: A list of arguments to be passed to the spoofed function (up to 11 maximum)
-#[cfg(not(feature = "desync"))]
-#[macro_export]
-macro_rules! syscall {
-    ($name:expr, $($arg:expr),* $(,)?) => {
-        unsafe {
-            $crate::internal::uwd_entry(
-                core::ptr::null_mut(),
-                $crate::SpoofKind::Syscall($name),
-                &[$(::core::mem::transmute($arg as usize)),*],
-            )
-        }
-    };
-}
-
-/// Invokes the function with the target function address, using a desynchronized call stack.
-///
-/// # Arguments
-///
-/// - `$addr`: A pointer to the function to spoof-call (typically a Windows API)
-/// - `$arg`: A list of arguments to be passed to the spoofed function (up to 11 maximum)
-#[cfg(feature = "desync")]
-#[macro_export]
-macro_rules! spoof {
-    ($addr:expr, $($arg:expr),+ $(,)?) => {
-        unsafe {
-            $crate::internal::uwd_entry(
-                $addr,
-                $crate::SpoofKind::Function,
-                &[$(::core::mem::transmute($arg as usize)),*],
-            )
-        }
-    };
-}
-
-/// Wraps a native Windows syscall with desynchronized stack spoofing.
-///
-/// # Arguments
-///
 /// - `$name`: The name of the syscall as a string literal.
-/// - `$arg`: A list of arguments to be passed to the spoofed function (up to 11 maximum).
-#[cfg(feature = "desync")]
+/// - `$arg`: A list of arguments to be passed to the spoofed function (up to 11 maximum)
 #[macro_export]
 macro_rules! syscall {
     ($name:expr, $($arg:expr),* $(,)?) => {
