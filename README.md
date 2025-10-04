@@ -69,13 +69,13 @@ This example performs a indirect system call to `NtAllocateVirtualMemory` with a
 ```rust
 use std::{ffi::c_void, ptr::null_mut};
 use dinvk::NT_SUCCESS;
-use uwd::{syscall, AsUwd};
+use uwd::{syscall, AsPointer};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Running indirect syscall with Call Stack Spoofing
     let mut addr = null_mut::<c_void>();
     let mut size = (1 << 12) as usize;
-    let mut status = syscall!("NtAllocateVirtualMemory", -1isize, addr.as_uwd_mut(), 0, size.as_uwd_mut(), 0x3000, 0x04)? as i32;
+    let mut status = syscall!("NtAllocateVirtualMemory", -1isize, addr.as_ptr_mut(), 0, size.as_ptr_mut(), 0x3000, 0x04)? as i32;
     if !NT_SUCCESS(status) {
         eprintln!("[-] NtAllocateVirtualMemory Failed With Status: {status:#X}");
         return Ok(())
