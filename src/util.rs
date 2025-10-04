@@ -58,22 +58,26 @@ pub fn find_gadget(
     runtime_table: &[IMAGE_RUNTIME_FUNCTION]
 ) -> Option<(*mut u8, u32)> {
     unsafe {
-        let mut gadgets = Vec::new();
-        for runtime in runtime_table.iter() {
-            let start = module as u64 + runtime.BeginAddress as u64;
-            let end = module as u64 + runtime.EndAddress as u64;
-            let size = end - start;
+        let mut gadgets = runtime_table
+            .iter()
+            .filter_map(|runtime| {
+                let start = module as u64 + runtime.BeginAddress as u64;
+                let end = module as u64 + runtime.EndAddress as u64;
+                let size = end.saturating_sub(start);
 
-            let bytes = from_raw_parts(start as *const u8, size as usize);
-            if let Some(pos) = memchr::memmem::find(bytes, pattern) {
-                let addr = (start as *mut u8).add(pos);
-                if let Some(size) = StackFrame::ignoring_set_fpreg(module, runtime) {
-                    if size != 0 {
-                        gadgets.push((addr, size))
-                    }
+                // Read bytes from the function's code region
+                let bytes = from_raw_parts(start as *const u8, size as usize);
+                let pos = memchr::memmem::find(bytes, pattern)?;
+
+                let addr = (start as *mut u8).wrapping_add(pos);
+                let frame_size = StackFrame::ignoring_set_fpreg(module, runtime)?;
+                if frame_size == 0 {
+                    return None;
                 }
-            }
-        }
+
+                Some((addr, frame_size))
+            })
+            .collect::<Vec<(*mut u8, u32)>>();
 
         // No gadget found? return None
         if gadgets.is_empty() {
@@ -97,7 +101,7 @@ pub fn find_gadget(
 /// The stack address (`RSP`) where a return to `BaseThreadInitThunk` was found.
 #[cfg(feature = "desync")]
 pub fn find_base_thread_return_address() -> Option<usize> {
-    use dinvk::{GetModuleHandle, GetProcAddress };
+    use dinvk::{GetModuleHandle, GetProcAddress};
     use dinvk::{hash::{jenkins3, murmur3}, parse::PE};
 
     unsafe {
