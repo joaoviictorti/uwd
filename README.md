@@ -45,20 +45,16 @@ This example shows how to spawn `calc.exe` using a spoofed call stack. We call `
 use dinvk::{GetModuleHandle, GetProcAddress};
 use uwd::spoof;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Resolves addresses of the WinAPI functions to be used
-    let kernel32 = GetModuleHandle("kernel32.dll", None);
-    let win_exec = GetProcAddress(kernel32, "WinExec", None);
-    
-    // Execute command with `WinExec`
-    let cmd = c"calc.exe";
-    let mut result = spoof!(win_exec, cmd.as_ptr(), 1)?;
-    if result.is_null() {
-        eprintln!("WinExec Failed");
-        return Ok(());
-    }
+// Resolves addresses of the WinAPI functions to be used
+let kernel32 = GetModuleHandle("kernel32.dll", None);
+let win_exec = GetProcAddress(kernel32, "WinExec", None);
 
-    Ok(())
+// Execute command with `WinExec`
+let cmd = c"calc.exe";
+let mut result = spoof!(win_exec, cmd.as_ptr(), 1)?;
+if result.is_null() {
+    eprintln!("WinExec Failed");
+    return Ok(());
 }
 ```
 
@@ -71,20 +67,16 @@ use std::{ffi::c_void, ptr::null_mut};
 use dinvk::NT_SUCCESS;
 use uwd::{syscall, AsPointer};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Running indirect syscall with Call Stack Spoofing
-    let mut addr = null_mut::<c_void>();
-    let mut size = (1 << 12) as usize;
-    let mut status = syscall!("NtAllocateVirtualMemory", -1isize, addr.as_ptr_mut(), 0, size.as_ptr_mut(), 0x3000, 0x04)? as i32;
-    if !NT_SUCCESS(status) {
-        eprintln!("[-] NtAllocateVirtualMemory Failed With Status: {status:#X}");
-        return Ok(())
-    }
-
-    println!("[+] Address allocated: {:?}", addr);
-
-    Ok(())
+// Running indirect syscall with Call Stack Spoofing
+let mut addr = null_mut::<c_void>();
+let mut size = (1 << 12) as usize;
+let mut status = syscall!("NtAllocateVirtualMemory", -1isize, addr.as_ptr_mut(), 0, size.as_ptr_mut(), 0x3000, 0x04)? as i32;
+if !NT_SUCCESS(status) {
+    eprintln!("[-] NtAllocateVirtualMemory Failed With Status: {status:#X}");
+    return Ok(())
 }
+
+println!("[+] Address allocated: {:?}", addr);
 ```
 
 ## Additional Resources
