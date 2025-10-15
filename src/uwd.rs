@@ -7,7 +7,7 @@ use dinvk::{
     GetModuleHandle, GetProcAddress,
     data::IMAGE_RUNTIME_FUNCTION,
     hash::murmur3,
-    parse::PE
+    pe::PE
 };
 
 use super::util::*;
