@@ -532,8 +532,8 @@ pub fn rbp_offset(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Opti
                         i += 2
                     } else {
                         // Case 2: OpInfo == 1 (Size in 2 slots, 32 bits)
-                        let frame_offset = *(unwind_code.add(1) as *mut u32);
-                        total_stack += frame_offset;
+                        let frame_offset = *(unwind_code.add(1) as *mut i32);
+                        total_stack += frame_offset as u32;
 
                         // Consumes 3 slots (1 for the instruction, 2 for the full size)
                         i += 3
@@ -698,7 +698,7 @@ pub fn stack_frame(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Opt
                         // Multiplies by 8 to the actual value
 
                         let frame_offset = ((*unwind_code.add(1)).FrameOffset as i32) * 8;
-                        total_stack += frame_offset as i32;
+                        total_stack += frame_offset;
 
                         // Consumes 2 slots (1 for the instruction, 1 for the size divided by 8)
                         i += 2
