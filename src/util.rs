@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use obfstr::obfbytes as b;
 use dinvk::data::IMAGE_RUNTIME_FUNCTION;
 
-use super::StackFrame;
+use super::ignoring_set_fpreg;
 
 /// Searches for a specific instruction pattern inside a function's code region,
 /// returning the relative offset from the function's start if found.
@@ -70,7 +70,7 @@ pub fn find_gadget(
                 let pos = memchr::memmem::find(bytes, pattern)?;
 
                 let addr = (start as *mut u8).wrapping_add(pos);
-                let frame_size = StackFrame::ignoring_set_fpreg(module, runtime)?;
+                let frame_size = ignoring_set_fpreg(module, runtime)?;
                 if frame_size == 0 {
                     return None;
                 }

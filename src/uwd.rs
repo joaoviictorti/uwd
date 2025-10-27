@@ -128,10 +128,10 @@ pub mod internal {
             .context(s!("BaseThreadInitThunk unwind info not found"))?;
 
         // Recovering the stack size of target apis
-        let rtl_user_size = StackFrame::ignoring_set_fpreg(ntdll, rtl_user_runtime)
+        let rtl_user_size = ignoring_set_fpreg(ntdll, rtl_user_runtime)
             .context(s!("RtlUserThreadStart stack size not found"))?;
         
-        let base_thread_size = StackFrame::ignoring_set_fpreg(kernel32, base_thread_runtime)
+        let base_thread_size = ignoring_set_fpreg(kernel32, base_thread_runtime)
             .context(s!("BaseThreadInitThunk stack size not found"))?;
 
         config.rtl_user_thread_size = rtl_user_size as u64;
@@ -386,7 +386,7 @@ impl Prolog {
         let mut prologs = runtime_table
             .iter()
             .filter_map(|runtime| {
-                let (is_valid, stack_size) = StackFrame::stack_frame(module_base, runtime)?;
+                let (is_valid, stack_size) = stack_frame(module_base, runtime)?;
                 if !is_valid {
                     return None;
                 }
@@ -430,7 +430,7 @@ impl Prolog {
         let mut prologs = runtime_table
             .iter()
             .filter_map(|runtime| {
-                let (rbp_offset, stack_size) = StackFrame::rbp_offset(module_base, runtime)?;
+                let (rbp_offset, stack_size) = rbp_offset(module_base, runtime)?;
                 if rbp_offset == 0 || stack_size == 0 || stack_size <= rbp_offset {
                     return None;
                 }
@@ -463,492 +463,487 @@ impl Prolog {
     }
 }
 
-/// Represents a utility struct for stack frame analysis and spoofing logic.
-pub struct StackFrame;
+/// Checks if the `RBP` register is pushed or saved on the stack in a spoofable manner.
+///
+/// # Arguments
+///
+/// * `module` - Base address of the loaded module.
+/// * `runtime` - A reference to the function's `IMAGE_RUNTIME_FUNCTION`.
+///
+/// # Returns
+///
+/// Tuple with the RBP offset and the total stack size.
+pub fn rbp_offset(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<(u32, u32)> {
+    unsafe {
+        let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
+        let unwind_code = (unwind_info as *mut u8).add(4) as *mut UNWIND_CODE;
+        let flag = (*unwind_info).VersionFlags.Flags();
 
-impl StackFrame {
-    /// Checks if the `RBP` register is pushed or saved on the stack in a spoofable manner.
-    ///
-    /// # Arguments
-    ///
-    /// * `module` - Base address of the loaded module.
-    /// * `runtime` - A reference to the function's `IMAGE_RUNTIME_FUNCTION`.
-    ///
-    /// # Returns
-    ///
-    /// Tuple with the RBP offset and the total stack size.
-    pub fn rbp_offset(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<(u32, u32)> {
-        unsafe {
-            let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
-            let unwind_code = (unwind_info as *mut u8).add(4) as *mut UNWIND_CODE;
-            let flag = (*unwind_info).VersionFlags.Flags();
+        let mut i = 0usize;
+        let mut total_stack = 0u32;
+        let mut rbp_pushed = false;
+        let mut stack_offset = 0;
 
-            let mut i = 0usize;
-            let mut total_stack = 0u32;
-            let mut rbp_pushed = false;
-            let mut stack_offset = 0;
+        while i < (*unwind_info).CountOfCodes as usize {
+            // Accessing `UNWIND_CODE` based on the index
+            let unwind_code = unwind_code.add(i);
 
-            while i < (*unwind_info).CountOfCodes as usize {
-                // Accessing `UNWIND_CODE` based on the index
-                let unwind_code = unwind_code.add(i);
+            // Information used in operation codes
+            let op_info = (*unwind_code).Anonymous.OpInfo() as usize;
+            let unwind_op = (*unwind_code).Anonymous.UnwindOp();
 
-                // Information used in operation codes
-                let op_info = (*unwind_code).Anonymous.OpInfo() as usize;
-                let unwind_op = (*unwind_code).Anonymous.UnwindOp();
+            match UNWIND_OP_CODES::try_from(unwind_op) {
+                // Saves a non-volatile register on the stack.
+                //
+                // Example: push <reg>
+                Ok(UWOP_PUSH_NONVOL) => {
+                    if Registers::Rsp == op_info {
+                        return None;
+                    }
 
-                match UNWIND_OP_CODES::try_from(unwind_op) {
-                    // Saves a non-volatile register on the stack.
-                    //
-                    // Example: push <reg>
-                    Ok(UWOP_PUSH_NONVOL) => {
-                        if Registers::Rsp == op_info {
+                    if Registers::Rbp == op_info {
+                        if rbp_pushed {
                             return None;
                         }
 
-                        if Registers::Rbp == op_info {
-                            if rbp_pushed {
-                                return None;
-                            }
-
-                            rbp_pushed = true;
-                            stack_offset = total_stack;
-                        }
-
-                        total_stack += 8;
-                        i += 1;
+                        rbp_pushed = true;
+                        stack_offset = total_stack;
                     }
 
-                    // Allocates large space on the stack.
-                    // - OpInfo == 0: The next slot contains the /8 size of the allocation (maximum 512 KB - 8).
-                    // - OpInfo == 1: The next two slots contain the full size of the allocation (up to 4 GB - 8).
-                    //
-                    // Example (OpInfo == 0): sub rsp, 0x100 ; Allocates 256 bytes
-                    // Example (OpInfo == 1): sub rsp, 0x10000 ; Allocates 65536 bytes (two slots used)
-                    Ok(UWOP_ALLOC_LARGE) => {
-                        if (*unwind_code).Anonymous.OpInfo() == 0 {
-                            // Case 1: OpInfo == 0 (Size in 1 slot, divided by 8)
-                            // Multiplies by 8 to the actual value
-
-                            let frame_offset = ((*unwind_code.add(1)).FrameOffset) * 8;
-                            total_stack += frame_offset as u32;
-
-                            // Consumes 2 slots (1 for the instruction, 1 for the size divided by 8)
-                            i += 2
-                        } else {
-                            // Case 2: OpInfo == 1 (Size in 2 slots, 32 bits)
-                            let frame_offset = *(unwind_code.add(1) as *mut u32);
-                            total_stack += frame_offset;
-
-                            // Consumes 3 slots (1 for the instruction, 2 for the full size)
-                            i += 3
-                        }
-                    }
-
-                    // Allocates small space in the stack.
-                    //
-                    // Example (OpInfo = 3): sub rsp, 0x20  ; Aloca 32 bytes (OpInfo + 1) * 8
-                    Ok(UWOP_ALLOC_SMALL) => {
-                        total_stack += ((op_info + 1) * 8) as u32;
-                        i += 1;
-                    }
-
-                    // UWOP_SAVE_NONVOL: Saves the contents of a non-volatile register in a specific position on the stack.
-                    // - Reg: Name of the saved register.
-                    // - FrameOffset: Offset indicating where the value of the register is saved.
-                    //
-                    // Example: mov [rsp + 0x40], rsi ; Saves the contents of RSI in RSP + 0x40
-                    Ok(UWOP_SAVE_NONVOL) => {
-                        if Registers::Rsp == op_info {
-                            return None;
-                        }
-
-                        if Registers::Rbp == op_info {
-                            if rbp_pushed {
-                                return None;
-                            }
-
-                            let offset = (*unwind_code.add(1)).FrameOffset * 8;
-                            stack_offset = total_stack + offset as u32;
-                            rbp_pushed = true;
-                        }
-
-                        i += 2;
-                    }
-
-                    // Saves a non-volatile register to a stack address with a long offset.
-                    // - Reg: Name of the saved register.
-                    // - FrameOffset: Long offset indicating where the value of the register is saved.
-                    //
-                    // Example: mov [rsp + 0x1040], rsi ; Saves the contents of RSI in RSP + 0x1040.
-                    Ok(UWOP_SAVE_NONVOL_BIG) => {
-                        if Registers::Rsp == op_info {
-                            return None;
-                        }
-
-                        if Registers::Rbp == op_info {
-                            if rbp_pushed {
-                                return None;
-                            }
-
-                            let offset = *(unwind_code.add(1) as *mut u32);
-                            stack_offset = total_stack + offset;
-                            rbp_pushed = true;
-                        }
-
-                        i += 3;
-                    }
-
-                    // Return
-                    Ok(UWOP_SET_FPREG) => return None,
-
-                    // - Reg: Name of the saved XMM register.
-                    // - FrameOffset: Offset indicating where the value of the register is saved.
-                    Ok(UWOP_SAVE_XMM128) => i += 2,
-
-                    // UWOP_SAVE_XMM128BIG: Saves the contents of a non-volatile XMM register to a stack address with a long offset.
-                    // - Reg: Name of the saved XMM register.
-                    // - FrameOffset: Long offset indicating where the value of the register is saved.
-                    //
-                    // Example: movaps [rsp + 0x1040], xmm6 ; Saves the contents of XMM6 in RSP + 0x1040.
-                    Ok(UWOP_SAVE_XMM128BIG) => i += 3,
-
-                    // Reserved code, not currently used.
-                    Ok(UWOP_EPILOG) | Ok(UWOP_SPARE_CODE) => i += 1,
-
-                    // Push a machine frame. This unwind code is used to record the effect of a hardware interrupt or exception.
-                    Ok(UWOP_PUSH_MACH_FRAME) => {
-                        total_stack += if op_info == 0 { 0x40 } else { 0x48 };
-                        i += 1
-                    }
-
-                    _ => {}
+                    total_stack += 8;
+                    i += 1;
                 }
-            }
 
-            // If there is a chain unwind structure, it too must be processed
-            // recursively and included in the stack size calculation.
-            if (flag & UNW_FLAG_CHAININFO) != 0 {
-                let count = (*unwind_info).CountOfCodes as usize;
-                let index = if count & 1 == 1 { count + 1 } else { count };
-                let runtime = unwind_code.add(index) as *const IMAGE_RUNTIME_FUNCTION;
-                if let Some((_, child_total)) = Self::rbp_offset(module, &*runtime) {
-                    total_stack += child_total;
-                } else {
-                    return None;
+                // Allocates large space on the stack.
+                // - OpInfo == 0: The next slot contains the /8 size of the allocation (maximum 512 KB - 8).
+                // - OpInfo == 1: The next two slots contain the full size of the allocation (up to 4 GB - 8).
+                //
+                // Example (OpInfo == 0): sub rsp, 0x100 ; Allocates 256 bytes
+                // Example (OpInfo == 1): sub rsp, 0x10000 ; Allocates 65536 bytes (two slots used)
+                Ok(UWOP_ALLOC_LARGE) => {
+                    if (*unwind_code).Anonymous.OpInfo() == 0 {
+                        // Case 1: OpInfo == 0 (Size in 1 slot, divided by 8)
+                        // Multiplies by 8 to the actual value
+
+                        let frame_offset = ((*unwind_code.add(1)).FrameOffset as i32) * 8;
+                        total_stack += frame_offset as u32;
+
+                        // Consumes 2 slots (1 for the instruction, 1 for the size divided by 8)
+                        i += 2
+                    } else {
+                        // Case 2: OpInfo == 1 (Size in 2 slots, 32 bits)
+                        let frame_offset = *(unwind_code.add(1) as *mut u32);
+                        total_stack += frame_offset;
+
+                        // Consumes 3 slots (1 for the instruction, 2 for the full size)
+                        i += 3
+                    }
                 }
-            }
 
-            Some((stack_offset, total_stack))
+                // Allocates small space in the stack.
+                //
+                // Example (OpInfo = 3): sub rsp, 0x20  ; Aloca 32 bytes (OpInfo + 1) * 8
+                Ok(UWOP_ALLOC_SMALL) => {
+                    total_stack += ((op_info + 1) * 8) as u32;
+                    i += 1;
+                }
+
+                // UWOP_SAVE_NONVOL: Saves the contents of a non-volatile register in a specific position on the stack.
+                // - Reg: Name of the saved register.
+                // - FrameOffset: Offset indicating where the value of the register is saved.
+                //
+                // Example: mov [rsp + 0x40], rsi ; Saves the contents of RSI in RSP + 0x40
+                Ok(UWOP_SAVE_NONVOL) => {
+                    if Registers::Rsp == op_info {
+                        return None;
+                    }
+
+                    if Registers::Rbp == op_info {
+                        if rbp_pushed {
+                            return None;
+                        }
+
+                        let offset = (*unwind_code.add(1)).FrameOffset * 8;
+                        stack_offset = total_stack + offset as u32;
+                        rbp_pushed = true;
+                    }
+
+                    i += 2;
+                }
+
+                // Saves a non-volatile register to a stack address with a long offset.
+                // - Reg: Name of the saved register.
+                // - FrameOffset: Long offset indicating where the value of the register is saved.
+                //
+                // Example: mov [rsp + 0x1040], rsi ; Saves the contents of RSI in RSP + 0x1040.
+                Ok(UWOP_SAVE_NONVOL_BIG) => {
+                    if Registers::Rsp == op_info {
+                        return None;
+                    }
+
+                    if Registers::Rbp == op_info {
+                        if rbp_pushed {
+                            return None;
+                        }
+
+                        let offset = *(unwind_code.add(1) as *mut u32);
+                        stack_offset = total_stack + offset;
+                        rbp_pushed = true;
+                    }
+
+                    i += 3;
+                }
+
+                // Return
+                Ok(UWOP_SET_FPREG) => return None,
+
+                // - Reg: Name of the saved XMM register.
+                // - FrameOffset: Offset indicating where the value of the register is saved.
+                Ok(UWOP_SAVE_XMM128) => i += 2,
+
+                // UWOP_SAVE_XMM128BIG: Saves the contents of a non-volatile XMM register to a stack address with a long offset.
+                // - Reg: Name of the saved XMM register.
+                // - FrameOffset: Long offset indicating where the value of the register is saved.
+                //
+                // Example: movaps [rsp + 0x1040], xmm6 ; Saves the contents of XMM6 in RSP + 0x1040.
+                Ok(UWOP_SAVE_XMM128BIG) => i += 3,
+
+                // Reserved code, not currently used.
+                Ok(UWOP_EPILOG) | Ok(UWOP_SPARE_CODE) => i += 1,
+
+                // Push a machine frame. This unwind code is used to record the effect of a hardware interrupt or exception.
+                Ok(UWOP_PUSH_MACH_FRAME) => {
+                    total_stack += if op_info == 0 { 0x40 } else { 0x48 };
+                    i += 1
+                }
+
+                _ => {}
+            }
         }
+
+        // If there is a chain unwind structure, it too must be processed
+        // recursively and included in the stack size calculation.
+        if (flag & UNW_FLAG_CHAININFO) != 0 {
+            let count = (*unwind_info).CountOfCodes as usize;
+            let index = if count & 1 == 1 { count + 1 } else { count };
+            let runtime = unwind_code.add(index) as *const IMAGE_RUNTIME_FUNCTION;
+            if let Some((_, child_total)) = rbp_offset(module, &*runtime) {
+                total_stack += child_total;
+            } else {
+                return None;
+            }
+        }
+
+        Some((stack_offset, total_stack))
     }
+}
 
-    /// Calculates the stack size of a function and checks if it uses `RBP` as frame pointer.
-    ///
-    /// # Arguments
-    ///
-    /// * `module` - Base address of the loaded module.
-    /// * `runtime` - A reference to the function's `IMAGE_RUNTIME_FUNCTION`.
-    ///
-    /// # Returns
-    ///
-    /// A flag indicating RBP usage and the total stack size.
-    pub fn stack_frame(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<(bool, u32)> {
-        unsafe {
-            let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
-            let unwind_code = (unwind_info as *mut u8).add(4) as *mut UNWIND_CODE;
-            let flag = (*unwind_info).VersionFlags.Flags();
+/// Calculates the stack size of a function and checks if it uses `RBP` as frame pointer.
+///
+/// # Arguments
+///
+/// * `module` - Base address of the loaded module.
+/// * `runtime` - A reference to the function's `IMAGE_RUNTIME_FUNCTION`.
+///
+/// # Returns
+///
+/// A flag indicating RBP usage and the total stack size.
+pub fn stack_frame(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<(bool, u32)> {
+    unsafe {
+        let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
+        let unwind_code = (unwind_info as *mut u8).add(4) as *mut UNWIND_CODE;
+        let flag = (*unwind_info).VersionFlags.Flags();
 
-            let mut i = 0usize;
-            let mut set_fpreg_hit = false;
-            let mut total_stack = 0i32;
-            while i < (*unwind_info).CountOfCodes as usize {
-                // Accessing `UNWIND_CODE` based on the index
-                let unwind_code = unwind_code.add(i);
+        let mut i = 0usize;
+        let mut set_fpreg_hit = false;
+        let mut total_stack = 0i32;
+        while i < (*unwind_info).CountOfCodes as usize {
+            // Accessing `UNWIND_CODE` based on the index
+            let unwind_code = unwind_code.add(i);
 
-                // Information used in operation codes
-                let op_info = (*unwind_code).Anonymous.OpInfo() as usize;
-                let unwind_op = (*unwind_code).Anonymous.UnwindOp();
+            // Information used in operation codes
+            let op_info = (*unwind_code).Anonymous.OpInfo() as usize;
+            let unwind_op = (*unwind_code).Anonymous.UnwindOp();
 
-                match UNWIND_OP_CODES::try_from(unwind_op) {
-                    // Saves a non-volatile register on the stack.
-                    //
-                    // Example: push <reg>
-                    Ok(UWOP_PUSH_NONVOL) => {
-                        if Registers::Rsp == op_info && !set_fpreg_hit {
-                            return None;
-                        }
-
-                        total_stack += 8;
-                        i += 1;
+            match UNWIND_OP_CODES::try_from(unwind_op) {
+                // Saves a non-volatile register on the stack.
+                //
+                // Example: push <reg>
+                Ok(UWOP_PUSH_NONVOL) => {
+                    if Registers::Rsp == op_info && !set_fpreg_hit {
+                        return None;
                     }
 
-                    // Allocates small space in the stack.
-                    //
-                    // Example (OpInfo = 3): sub rsp, 0x20  ; Aloca 32 bytes (OpInfo + 1) * 8
-                    Ok(UWOP_ALLOC_SMALL) => {
-                        total_stack += ((op_info + 1) * 8) as i32;
-                        i += 1;
-                    }
-
-                    // Allocates large space on the stack.
-                    // - OpInfo == 0: The next slot contains the /8 size of the allocation (maximum 512 KB - 8).
-                    // - OpInfo == 1: The next two slots contain the full size of the allocation (up to 4 GB - 8).
-                    //
-                    // Example (OpInfo == 0): sub rsp, 0x100 ; Allocates 256 bytes
-                    // Example (OpInfo == 1): sub rsp, 0x10000 ; Allocates 65536 bytes (two slots used)
-                    Ok(UWOP_ALLOC_LARGE) => {
-                        if (*unwind_code).Anonymous.OpInfo() == 0 {
-                            // Case 1: OpInfo == 0 (Size in 1 slot, divided by 8)
-                            // Multiplies by 8 to the actual value
-
-                            let frame_offset = ((*unwind_code.add(1)).FrameOffset) * 8;
-                            total_stack += frame_offset as i32;
-
-                            // Consumes 2 slots (1 for the instruction, 1 for the size divided by 8)
-                            i += 2
-                        } else {
-                            // Case 2: OpInfo == 1 (Size in 2 slots, 32 bits)
-                            let frame_offset = *(unwind_code.add(1) as *mut i32);
-                            total_stack += frame_offset;
-
-                            // Consumes 3 slots (1 for the instruction, 2 for the full size)
-                            i += 3
-                        }
-                    }
-
-                    // UWOP_SAVE_NONVOL: Saves the contents of a non-volatile register in a specific position on the stack.
-                    // - Reg: Name of the saved register.
-                    // - FrameOffset: Offset indicating where the value of the register is saved.
-                    //
-                    // Example: mov [rsp + 0x40], rsi ; Saves the contents of RSI in RSP + 0x40
-                    Ok(UWOP_SAVE_NONVOL) => {
-                        if Registers::Rsp == op_info || Registers::Rbp == op_info {
-                            return None;
-                        }
-
-                        i += 2;
-                    }
-
-                    // Saves a non-volatile register to a stack address with a long offset.
-                    // - Reg: Name of the saved register.
-                    // - FrameOffset: Long offset indicating where the value of the register is saved.
-                    //
-                    // Example: mov [rsp + 0x1040], rsi ; Saves the contents of RSI in RSP + 0x1040.
-                    Ok(UWOP_SAVE_NONVOL_BIG) => {
-                        if Registers::Rsp == op_info || Registers::Rbp == op_info {
-                            return None;
-                        }
-
-                        i += 3;
-                    }
-
-                    // Saves the contents of a non-volatile XMM register on the stack.
-                    // - Reg: Name of the saved XMM register.
-                    // - FrameOffset: Offset indicating where the value of the register is saved.
-                    //
-                    // Example: movaps [rsp + 0x20], xmm6 ; Saves the contents of XMM6 in RSP + 0x20.
-                    Ok(UWOP_SAVE_XMM128) => i += 2,
-
-                    // UWOP_SAVE_XMM128BIG: Saves the contents of a non-volatile XMM register to a stack address with a long offset.
-                    // - Reg: Name of the saved XMM register.
-                    // - FrameOffset: Long offset indicating where the value of the register is saved.
-                    //
-                    // Example: movaps [rsp + 0x1040], xmm6 ; Saves the contents of XMM6 in RSP + 0x1040.
-                    Ok(UWOP_SAVE_XMM128BIG) => i += 3,
-
-                    // UWOP_SET_FPREG: Marks use of register as stack base (e.g. RBP).
-                    // Ignore if not RBP, has EH handler or chained unwind.
-                    // Subtract `FrameOffset << 4` from the stack total.
-                    Ok(UWOP_SET_FPREG) => {
-                        if (flag & UNW_FLAG_EHANDLER) != 0 && (flag & UNW_FLAG_CHAININFO) != 0 {
-                            return None;
-                        }
-
-                        if (*unwind_info).FrameInfo.FrameRegister() != Registers::Rbp as u8 {
-                            return None;
-                        }
-
-                        set_fpreg_hit = true;
-                        let offset = ((*unwind_info).FrameInfo.FrameOffset() as i32) << 4;
-                        total_stack -= offset;
-                        i += 1
-                    }
-
-                    // Reserved code, not currently used.
-                    Ok(UWOP_EPILOG) | Ok(UWOP_SPARE_CODE) => i += 1,
-
-                    // Push a machine frame. This unwind code is used to record the effect of a hardware interrupt or exception.
-                    Ok(UWOP_PUSH_MACH_FRAME) => {
-                        total_stack += if op_info == 0 { 0x40 } else { 0x48 };
-                        i += 1
-                    }
-                    _ => {}
+                    total_stack += 8;
+                    i += 1;
                 }
-            }
 
-            // If there is a chain unwind structure, it too must be processed
-            // recursively and included in the stack size calculation.
-            if (flag & UNW_FLAG_CHAININFO) != 0 {
-                let count = (*unwind_info).CountOfCodes as usize;
-                let index = if count & 1 == 1 { count + 1 } else { count };
-                let runtime = unwind_code.add(index) as *const IMAGE_RUNTIME_FUNCTION;
-                if let Some((chained_fpreg_hit, chained_stack)) = Self::stack_frame(module, &*runtime) {
-                    total_stack += chained_stack as i32;
-                    set_fpreg_hit |= chained_fpreg_hit;
-                } else {
-                    return None;
+                // Allocates small space in the stack.
+                //
+                // Example (OpInfo = 3): sub rsp, 0x20  ; Aloca 32 bytes (OpInfo + 1) * 8
+                Ok(UWOP_ALLOC_SMALL) => {
+                    total_stack += ((op_info + 1) * 8) as i32;
+                    i += 1;
                 }
-            }
 
-            Some((set_fpreg_hit, total_stack as u32))
+                // Allocates large space on the stack.
+                // - OpInfo == 0: The next slot contains the /8 size of the allocation (maximum 512 KB - 8).
+                // - OpInfo == 1: The next two slots contain the full size of the allocation (up to 4 GB - 8).
+                //
+                // Example (OpInfo == 0): sub rsp, 0x100 ; Allocates 256 bytes
+                // Example (OpInfo == 1): sub rsp, 0x10000 ; Allocates 65536 bytes (two slots used)
+                Ok(UWOP_ALLOC_LARGE) => {
+                    if (*unwind_code).Anonymous.OpInfo() == 0 {
+                        // Case 1: OpInfo == 0 (Size in 1 slot, divided by 8)
+                        // Multiplies by 8 to the actual value
+
+                        let frame_offset = ((*unwind_code.add(1)).FrameOffset as i32) * 8;
+                        total_stack += frame_offset as i32;
+
+                        // Consumes 2 slots (1 for the instruction, 1 for the size divided by 8)
+                        i += 2
+                    } else {
+                        // Case 2: OpInfo == 1 (Size in 2 slots, 32 bits)
+                        let frame_offset = *(unwind_code.add(1) as *mut i32);
+                        total_stack += frame_offset;
+
+                        // Consumes 3 slots (1 for the instruction, 2 for the full size)
+                        i += 3
+                    }
+                }
+
+                // UWOP_SAVE_NONVOL: Saves the contents of a non-volatile register in a specific position on the stack.
+                // - Reg: Name of the saved register.
+                // - FrameOffset: Offset indicating where the value of the register is saved.
+                //
+                // Example: mov [rsp + 0x40], rsi ; Saves the contents of RSI in RSP + 0x40
+                Ok(UWOP_SAVE_NONVOL) => {
+                    if Registers::Rsp == op_info || Registers::Rbp == op_info {
+                        return None;
+                    }
+
+                    i += 2;
+                }
+
+                // Saves a non-volatile register to a stack address with a long offset.
+                // - Reg: Name of the saved register.
+                // - FrameOffset: Long offset indicating where the value of the register is saved.
+                //
+                // Example: mov [rsp + 0x1040], rsi ; Saves the contents of RSI in RSP + 0x1040.
+                Ok(UWOP_SAVE_NONVOL_BIG) => {
+                    if Registers::Rsp == op_info || Registers::Rbp == op_info {
+                        return None;
+                    }
+
+                    i += 3;
+                }
+
+                // Saves the contents of a non-volatile XMM register on the stack.
+                // - Reg: Name of the saved XMM register.
+                // - FrameOffset: Offset indicating where the value of the register is saved.
+                //
+                // Example: movaps [rsp + 0x20], xmm6 ; Saves the contents of XMM6 in RSP + 0x20.
+                Ok(UWOP_SAVE_XMM128) => i += 2,
+
+                // UWOP_SAVE_XMM128BIG: Saves the contents of a non-volatile XMM register to a stack address with a long offset.
+                // - Reg: Name of the saved XMM register.
+                // - FrameOffset: Long offset indicating where the value of the register is saved.
+                //
+                // Example: movaps [rsp + 0x1040], xmm6 ; Saves the contents of XMM6 in RSP + 0x1040.
+                Ok(UWOP_SAVE_XMM128BIG) => i += 3,
+
+                // UWOP_SET_FPREG: Marks use of register as stack base (e.g. RBP).
+                // Ignore if not RBP, has EH handler or chained unwind.
+                // Subtract `FrameOffset << 4` from the stack total.
+                Ok(UWOP_SET_FPREG) => {
+                    if (flag & UNW_FLAG_EHANDLER) != 0 && (flag & UNW_FLAG_CHAININFO) != 0 {
+                        return None;
+                    }
+
+                    if (*unwind_info).FrameInfo.FrameRegister() != Registers::Rbp as u8 {
+                        return None;
+                    }
+
+                    set_fpreg_hit = true;
+                    let offset = ((*unwind_info).FrameInfo.FrameOffset() as i32) << 4;
+                    total_stack -= offset;
+                    i += 1
+                }
+
+                // Reserved code, not currently used.
+                Ok(UWOP_EPILOG) | Ok(UWOP_SPARE_CODE) => i += 1,
+
+                // Push a machine frame. This unwind code is used to record the effect of a hardware interrupt or exception.
+                Ok(UWOP_PUSH_MACH_FRAME) => {
+                    total_stack += if op_info == 0 { 0x40 } else { 0x48 };
+                    i += 1
+                }
+                _ => {}
+            }
         }
+
+        // If there is a chain unwind structure, it too must be processed
+        // recursively and included in the stack size calculation.
+        if (flag & UNW_FLAG_CHAININFO) != 0 {
+            let count = (*unwind_info).CountOfCodes as usize;
+            let index = if count & 1 == 1 { count + 1 } else { count };
+            let runtime = unwind_code.add(index) as *const IMAGE_RUNTIME_FUNCTION;
+            if let Some((chained_fpreg_hit, chained_stack)) = stack_frame(module, &*runtime) {
+                total_stack += chained_stack as i32;
+                set_fpreg_hit |= chained_fpreg_hit;
+            } else {
+                return None;
+            }
+        }
+
+        Some((set_fpreg_hit, total_stack as u32))
     }
+}
 
-    /// Calculates the total stack frame size of a function, ignoring `setfp` frames.
-    ///
-    /// Rejects any function that uses `UWOP_SET_FPREG` or manipulates `RSP` directly.
-    ///
-    /// # Arguments
-    ///
-    /// * `module` - Base address of the loaded module.
-    /// * `runtime` - A reference to the function's `IMAGE_RUNTIME_FUNCTION`.
-    ///
-    /// # Returns
-    ///
-    /// Total stack size in bytes for a spoof‑safe frame.
-    pub fn ignoring_set_fpreg(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<u32> {
-        unsafe {
-            let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
-            let unwind_code = (unwind_info as *mut u8).add(4) as *mut UNWIND_CODE;
-            let flag = (*unwind_info).VersionFlags.Flags();
+/// Calculates the total stack frame size of a function, ignoring `setfp` frames.
+///
+/// Rejects any function that uses `UWOP_SET_FPREG` or manipulates `RSP` directly.
+///
+/// # Arguments
+///
+/// * `module` - Base address of the loaded module.
+/// * `runtime` - A reference to the function's `IMAGE_RUNTIME_FUNCTION`.
+///
+/// # Returns
+///
+/// Total stack size in bytes for a spoof‑safe frame.
+pub fn ignoring_set_fpreg(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<u32> {
+    unsafe {
+        let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
+        let unwind_code = (unwind_info as *mut u8).add(4) as *mut UNWIND_CODE;
+        let flag = (*unwind_info).VersionFlags.Flags();
 
-            let mut i = 0usize;
-            let mut total_stack = 0u32;
-            while i < (*unwind_info).CountOfCodes as usize {
-                // Accessing `UNWIND_CODE` based on the index
-                let unwind_code = unwind_code.add(i);
+        let mut i = 0usize;
+        let mut total_stack = 0u32;
+        while i < (*unwind_info).CountOfCodes as usize {
+            // Accessing `UNWIND_CODE` based on the index
+            let unwind_code = unwind_code.add(i);
 
-                // Information used in operation codes
-                let op_info = (*unwind_code).Anonymous.OpInfo() as usize;
-                let unwind_op = (*unwind_code).Anonymous.UnwindOp();
+            // Information used in operation codes
+            let op_info = (*unwind_code).Anonymous.OpInfo() as usize;
+            let unwind_op = (*unwind_code).Anonymous.UnwindOp();
 
-                match UNWIND_OP_CODES::try_from(unwind_op) {
-                    // Saves a non-volatile register on the stack.
-                    //
-                    // Example: push <reg>
-                    Ok(UWOP_PUSH_NONVOL) => {
-                        if Registers::Rsp == op_info {
-                            return None;
-                        }
-
-                        total_stack += 8;
-                        i += 1;
+            match UNWIND_OP_CODES::try_from(unwind_op) {
+                // Saves a non-volatile register on the stack.
+                //
+                // Example: push <reg>
+                Ok(UWOP_PUSH_NONVOL) => {
+                    if Registers::Rsp == op_info {
+                        return None;
                     }
 
-                    // Allocates small space in the stack.
-                    //
-                    // Example (OpInfo = 3): sub rsp, 0x20  ; Aloca 32 bytes (OpInfo + 1) * 8
-                    Ok(UWOP_ALLOC_SMALL) => {
-                        total_stack += ((op_info + 1) * 8) as u32;
-                        i += 1;
-                    }
-
-                    // Allocates large space on the stack.
-                    // - OpInfo == 0: The next slot contains the /8 size of the allocation (maximum 512 KB - 8).
-                    // - OpInfo == 1: The next two slots contain the full size of the allocation (up to 4 GB - 8).
-                    //
-                    // Example (OpInfo == 0): sub rsp, 0x100 ; Allocates 256 bytes
-                    // Example (OpInfo == 1): sub rsp, 0x10000 ; Allocates 65536 bytes (two slots used)
-                    Ok(UWOP_ALLOC_LARGE) => {
-                        if (*unwind_code).Anonymous.OpInfo() == 0 {
-                            // Case 1: OpInfo == 0 (Size in 1 slot, divided by 8)
-                            // Multiplies by 8 to the actual value
-
-                            let frame_offset = ((*unwind_code.add(1)).FrameOffset) * 8;
-                            total_stack += frame_offset as u32;
-
-                            // Consumes 2 slots (1 for the instruction, 1 for the size divided by 8)
-                            i += 2
-                        } else {
-                            // Case 2: OpInfo == 1 (Size in 2 slots, 32 bits)
-                            let frame_offset = *(unwind_code.add(1) as *mut u32);
-                            total_stack += frame_offset;
-
-                            // Consumes 3 slots (1 for the instruction, 2 for the full size)
-                            i += 3
-                        }
-                    }
-
-                    // UWOP_SAVE_NONVOL: Saves the contents of a non-volatile register in a specific position on the stack.
-                    // - Reg: Name of the saved register.
-                    // - FrameOffset: Offset indicating where the value of the register is saved.
-                    //
-                    // Example: mov [rsp + 0x40], rsi ; Saves the contents of RSI in RSP + 0x40
-                    Ok(UWOP_SAVE_NONVOL) => {
-                        if Registers::Rsp == op_info {
-                            return None;
-                        }
-
-                        i += 2;
-                    }
-
-                    // Saves a non-volatile register to a stack address with a long offset.
-                    // - Reg: Name of the saved register.
-                    // - FrameOffset: Long offset indicating where the value of the register is saved.
-                    //
-                    // Example: mov [rsp + 0x1040], rsi ; Saves the contents of RSI in RSP + 0x1040.
-                    Ok(UWOP_SAVE_NONVOL_BIG) => {
-                        if Registers::Rsp == op_info {
-                            return None;
-                        }
-
-                        i += 3;
-                    }
-
-                    // Saves the contents of a non-volatile XMM register on the stack.
-                    // - Reg: Name of the saved XMM register.
-                    // - FrameOffset: Offset indicating where the value of the register is saved.
-                    //
-                    // Example: movaps [rsp + 0x20], xmm6 ; Saves the contents of XMM6 in RSP + 0x20.
-                    Ok(UWOP_SAVE_XMM128) => i += 2,
-
-                    // UWOP_SAVE_XMM128BIG: Saves the contents of a non-volatile XMM register to a stack address with a long offset.
-                    // - Reg: Name of the saved XMM register.
-                    // - FrameOffset: Long offset indicating where the value of the register is saved.
-                    //
-                    // Example: movaps [rsp + 0x1040], xmm6 ; Saves the contents of XMM6 in RSP + 0x1040.
-                    Ok(UWOP_SAVE_XMM128BIG) => i += 3,
-
-                    // Ignoring.
-                    Ok(UWOP_SET_FPREG) => i += 1,
-
-                    // Reserved code, not currently used.
-                    Ok(UWOP_EPILOG) | Ok(UWOP_SPARE_CODE) => i += 1,
-
-                    // Push a machine frame. This unwind code is used to record the effect of a hardware interrupt or exception.
-                    Ok(UWOP_PUSH_MACH_FRAME) => {
-                        total_stack += if op_info == 0 { 0x40 } else { 0x48 };
-                        i += 1
-                    }
-                    _ => {}
+                    total_stack += 8;
+                    i += 1;
                 }
-            }
 
-            // If there is a chain unwind structure, it too must be processed
-            // recursively and included in the stack size calculation.
-            if (flag & UNW_FLAG_CHAININFO) != 0 {
-                let count = (*unwind_info).CountOfCodes as usize;
-                let index = if count & 1 == 1 { count + 1 } else { count };
-                let runtime = unwind_code.add(index) as *const IMAGE_RUNTIME_FUNCTION;
-                if let Some(chained_stack) = Self::ignoring_set_fpreg(module, &*runtime) {
-                    total_stack += chained_stack;
-                } else {
-                    return None;
+                // Allocates small space in the stack.
+                //
+                // Example (OpInfo = 3): sub rsp, 0x20  ; Aloca 32 bytes (OpInfo + 1) * 8
+                Ok(UWOP_ALLOC_SMALL) => {
+                    total_stack += ((op_info + 1) * 8) as u32;
+                    i += 1;
                 }
-            }
 
-            Some(total_stack)
+                // Allocates large space on the stack.
+                // - OpInfo == 0: The next slot contains the /8 size of the allocation (maximum 512 KB - 8).
+                // - OpInfo == 1: The next two slots contain the full size of the allocation (up to 4 GB - 8).
+                //
+                // Example (OpInfo == 0): sub rsp, 0x100 ; Allocates 256 bytes
+                // Example (OpInfo == 1): sub rsp, 0x10000 ; Allocates 65536 bytes (two slots used)
+                Ok(UWOP_ALLOC_LARGE) => {
+                    if (*unwind_code).Anonymous.OpInfo() == 0 {
+                        // Case 1: OpInfo == 0 (Size in 1 slot, divided by 8)
+                        // Multiplies by 8 to the actual value
+
+                        let frame_offset = ((*unwind_code.add(1)).FrameOffset as i32) * 8;
+                        total_stack += frame_offset as u32;
+
+                        // Consumes 2 slots (1 for the instruction, 1 for the size divided by 8)
+                        i += 2
+                    } else {
+                        // Case 2: OpInfo == 1 (Size in 2 slots, 32 bits)
+                        let frame_offset = *(unwind_code.add(1) as *mut u32);
+                        total_stack += frame_offset;
+
+                        // Consumes 3 slots (1 for the instruction, 2 for the full size)
+                        i += 3
+                    }
+                }
+
+                // UWOP_SAVE_NONVOL: Saves the contents of a non-volatile register in a specific position on the stack.
+                // - Reg: Name of the saved register.
+                // - FrameOffset: Offset indicating where the value of the register is saved.
+                //
+                // Example: mov [rsp + 0x40], rsi ; Saves the contents of RSI in RSP + 0x40
+                Ok(UWOP_SAVE_NONVOL) => {
+                    if Registers::Rsp == op_info {
+                        return None;
+                    }
+
+                    i += 2;
+                }
+
+                // Saves a non-volatile register to a stack address with a long offset.
+                // - Reg: Name of the saved register.
+                // - FrameOffset: Long offset indicating where the value of the register is saved.
+                //
+                // Example: mov [rsp + 0x1040], rsi ; Saves the contents of RSI in RSP + 0x1040.
+                Ok(UWOP_SAVE_NONVOL_BIG) => {
+                    if Registers::Rsp == op_info {
+                        return None;
+                    }
+
+                    i += 3;
+                }
+
+                // Saves the contents of a non-volatile XMM register on the stack.
+                // - Reg: Name of the saved XMM register.
+                // - FrameOffset: Offset indicating where the value of the register is saved.
+                //
+                // Example: movaps [rsp + 0x20], xmm6 ; Saves the contents of XMM6 in RSP + 0x20.
+                Ok(UWOP_SAVE_XMM128) => i += 2,
+
+                // UWOP_SAVE_XMM128BIG: Saves the contents of a non-volatile XMM register to a stack address with a long offset.
+                // - Reg: Name of the saved XMM register.
+                // - FrameOffset: Long offset indicating where the value of the register is saved.
+                //
+                // Example: movaps [rsp + 0x1040], xmm6 ; Saves the contents of XMM6 in RSP + 0x1040.
+                Ok(UWOP_SAVE_XMM128BIG) => i += 3,
+
+                // Ignoring.
+                Ok(UWOP_SET_FPREG) => i += 1,
+
+                // Reserved code, not currently used.
+                Ok(UWOP_EPILOG) | Ok(UWOP_SPARE_CODE) => i += 1,
+
+                // Push a machine frame. This unwind code is used to record the effect of a hardware interrupt or exception.
+                Ok(UWOP_PUSH_MACH_FRAME) => {
+                    total_stack += if op_info == 0 { 0x40 } else { 0x48 };
+                    i += 1
+                }
+                _ => {}
+            }
         }
+
+        // If there is a chain unwind structure, it too must be processed
+        // recursively and included in the stack size calculation.
+        if (flag & UNW_FLAG_CHAININFO) != 0 {
+            let count = (*unwind_info).CountOfCodes as usize;
+            let index = if count & 1 == 1 { count + 1 } else { count };
+            let runtime = unwind_code.add(index) as *const IMAGE_RUNTIME_FUNCTION;
+            if let Some(chained_stack) = ignoring_set_fpreg(module, &*runtime) {
+                total_stack += chained_stack;
+            } else {
+                return None;
+            }
+        }
+
+        Some(total_stack)
     }
 }
 
