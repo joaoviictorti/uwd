@@ -867,8 +867,8 @@ pub fn ignoring_set_fpreg(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION)
                         i += 2
                     } else {
                         // Case 2: OpInfo == 1 (Size in 2 slots, 32 bits)
-                        let frame_offset = *(unwind_code.add(1) as *mut u32);
-                        total_stack += frame_offset;
+                        let frame_offset = *(unwind_code.add(1) as *mut i32);
+                        total_stack += frame_offset as u32;
 
                         // Consumes 3 slots (1 for the instruction, 2 for the full size)
                         i += 3
