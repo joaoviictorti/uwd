@@ -102,7 +102,7 @@ pub fn find_gadget(
 #[cfg(feature = "desync")]
 pub fn find_base_thread_return_address() -> Option<usize> {
     use dinvk::{GetModuleHandle, GetProcAddress};
-    use dinvk::{hash::{jenkins3, murmur3}, parse::PE};
+    use dinvk::{hash::{jenkins3, murmur3}, pe::PE};
 
     unsafe {
         // Get handle for kernel32.dll
