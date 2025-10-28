@@ -656,7 +656,7 @@ pub fn stack_frame(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Opt
 
         let mut i = 0usize;
         let mut set_fpreg_hit = false;
-        let mut total_stack = 0i32;
+        let mut total_stack = 0u32;
         while i < (*unwind_info).CountOfCodes as usize {
             // Accessing `UNWIND_CODE` based on the index
             let unwind_code = unwind_code.add(i);
@@ -682,7 +682,7 @@ pub fn stack_frame(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Opt
                 //
                 // Example (OpInfo = 3): sub rsp, 0x20  ; Aloca 32 bytes (OpInfo + 1) * 8
                 Ok(UWOP_ALLOC_SMALL) => {
-                    total_stack += ((op_info + 1) * 8) as i32;
+                    total_stack += ((op_info + 1) * 8) as u32;
                     i += 1;
                 }
 
@@ -698,14 +698,14 @@ pub fn stack_frame(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Opt
                         // Multiplies by 8 to the actual value
 
                         let frame_offset = ((*unwind_code.add(1)).FrameOffset as i32) * 8;
-                        total_stack += frame_offset;
+                        total_stack += frame_offset as u32;
 
                         // Consumes 2 slots (1 for the instruction, 1 for the size divided by 8)
                         i += 2
                     } else {
                         // Case 2: OpInfo == 1 (Size in 2 slots, 32 bits)
                         let frame_offset = *(unwind_code.add(1) as *mut i32);
-                        total_stack += frame_offset;
+                        total_stack += frame_offset as u32;
 
                         // Consumes 3 slots (1 for the instruction, 2 for the full size)
                         i += 3
@@ -766,7 +766,7 @@ pub fn stack_frame(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Opt
 
                     set_fpreg_hit = true;
                     let offset = ((*unwind_info).FrameInfo.FrameOffset() as i32) << 4;
-                    total_stack -= offset;
+                    total_stack -= offset as u32;
                     i += 1
                 }
 
@@ -789,14 +789,14 @@ pub fn stack_frame(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Opt
             let index = if count & 1 == 1 { count + 1 } else { count };
             let runtime = unwind_code.add(index) as *const IMAGE_RUNTIME_FUNCTION;
             if let Some((chained_fpreg_hit, chained_stack)) = stack_frame(module, &*runtime) {
-                total_stack += chained_stack as i32;
+                total_stack += chained_stack as u32;
                 set_fpreg_hit |= chained_fpreg_hit;
             } else {
                 return None;
             }
         }
 
-        Some((set_fpreg_hit, total_stack as u32))
+        Some((set_fpreg_hit, total_stack))
     }
 }
 
