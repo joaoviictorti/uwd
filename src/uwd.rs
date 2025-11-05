@@ -437,12 +437,14 @@ impl Prolog {
 
                 let offset = find_valid_instruction_offset(module_base, runtime)?;
                 let frame = module_base as u64 + runtime.BeginAddress as u64;
-                Some(Self {
-                    frame,
-                    stack_size,
-                    offset,
-                    rbp_offset,
-                })
+                Some(
+                    Self {
+                        frame,
+                        stack_size,
+                        offset,
+                        rbp_offset,
+                    }
+                )
             })
             .collect::<Vec<Self>>();
 

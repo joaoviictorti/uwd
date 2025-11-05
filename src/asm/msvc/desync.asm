@@ -1,3 +1,6 @@
+;; Copyright (c) 2025 joaoviictorti
+;; Licensed under the MIT License. See LICENSE file in the project root for details.
+
 ;;
 ;; Code responsible for Call Stack Spoofing Via Desync (MASM)
 ;;
