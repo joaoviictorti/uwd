@@ -1,8 +1,8 @@
 #[test]
 fn test_win_exec() -> Result<(), Box<dyn core::error::Error>> {
     // Resolves addresses of the WinAPI functions to be used
-    let kernel32 = dinvk::GetModuleHandle("kernel32.dll", None);
-    let win_exec = dinvk::GetProcAddress(kernel32, "WinExec", None);
+    let kernel32 = dinvk::module::get_module_address("kernel32.dll", None);
+    let win_exec = dinvk::module::get_proc_address(kernel32, "WinExec", None);
 
     // Execute command with `WinExec`
     let cmd = c"calc.exe";
@@ -18,8 +18,8 @@ fn test_win_exec() -> Result<(), Box<dyn core::error::Error>> {
 #[test]
 fn test_win_exec_synthetic() -> Result<(), Box<dyn core::error::Error>> {
     // Resolves addresses of the WinAPI functions to be used
-    let kernel32 = dinvk::GetModuleHandle("kernel32.dll", None);
-    let win_exec = dinvk::GetProcAddress(kernel32, "WinExec", None);
+    let kernel32 = dinvk::module::get_module_address("kernel32.dll", None);
+    let win_exec = dinvk::module::get_proc_address(kernel32, "WinExec", None);
 
     // Execute command with `WinExec`
     let cmd = c"calc.exe";

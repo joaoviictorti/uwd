@@ -7,11 +7,14 @@ use core::ffi::c_void;
 use anyhow::{Context, Result, bail};
 use obfstr::obfstring as s;
 use dinvk::{
-    GetModuleHandle, GetProcAddress,
     data::IMAGE_RUNTIME_FUNCTION,
     hash::murmur3,
-    pe::PE
+    pe::PE,
+    module::{get_module_address, get_proc_address}
 };
+
+
+
 
 use super::util::*;
 use super::data::{
@@ -97,7 +100,7 @@ pub mod internal {
         let mut config = Config::default();
 
         // Get the base address of kernelbase.dll
-        let kernelbase = GetModuleHandle(2737729883u32, Some(murmur3));
+        let kernelbase = get_module_address(2737729883u32, Some(murmur3));
 
         // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices
         let pe_kernelbase = PE::parse(kernelbase);
@@ -106,14 +109,14 @@ pub mod internal {
         ))?;
 
         // Preparing addresses to use as artificial frames to emulate thread stack initialization
-        let ntdll = GetModuleHandle(2788516083u32, Some(murmur3));
+        let ntdll = get_module_address(2788516083u32, Some(murmur3));
         if ntdll.is_null() {
             bail!(s!("ntdll.dll not found"));
         }
 
-        let kernel32 = GetModuleHandle(2808682670u32, Some(murmur3));
-        let rlt_user_addr = GetProcAddress(ntdll, 1578834099u32, Some(murmur3));
-        let base_thread_addr = GetProcAddress(kernel32, 4083630997u32, Some(murmur3));
+        let kernel32 = get_module_address(2808682670u32, Some(murmur3));
+        let rlt_user_addr = get_proc_address(ntdll, 1578834099u32, Some(murmur3));
+        let base_thread_addr = get_proc_address(kernel32, 4083630997u32, Some(murmur3));
         config.rtl_user_addr = rlt_user_addr;
         config.base_thread_addr = base_thread_addr;
 
@@ -199,9 +202,9 @@ pub mod internal {
             // Executes a syscall indirectly
             SpoofKind::Syscall(name) => {
                 // Retrieves the address of the function
-                let addr = GetProcAddress(ntdll, name, None);
+                let addr = get_proc_address(ntdll, name, None);
                 if addr.is_null() {
-                    bail!(s!("GetProcAddress returned null"));
+                    bail!(s!("get_proc_address returned null"));
                 }
 
                 // Configures the parameters to be sent to execute the syscall indirectly
@@ -233,7 +236,7 @@ pub mod internal {
         let mut config = Config::default();
 
         // Get the base address of kernelbase.dll
-        let kernelbase = GetModuleHandle(2737729883u32, Some(murmur3));
+        let kernelbase = get_module_address(2737729883u32, Some(murmur3));
 
         // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices
         let pe = PE::parse(kernelbase);
@@ -304,15 +307,15 @@ pub mod internal {
             // Executes a syscall indirectly
             SpoofKind::Syscall(name) => {
                 // Retrieves the ntdll address
-                let ntdll = GetModuleHandle(2788516083u32, Some(murmur3));
+                let ntdll = get_module_address(2788516083u32, Some(murmur3));
                 if ntdll.is_null() {
                     bail!(s!("ntdll.dll not found"));
                 }
 
                 // Retrieves the address of the function
-                let addr = GetProcAddress(ntdll, name, None);
+                let addr = get_proc_address(ntdll, name, None);
                 if addr.is_null() {
-                    bail!(s!("GetProcAddress returned null"));
+                    bail!(s!("get_proc_address returned null"));
                 }
 
                 // Configures the parameters to be sent to execute the syscall indirectly
