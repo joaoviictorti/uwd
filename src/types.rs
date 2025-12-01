@@ -19,7 +19,7 @@ pub struct Unwind {
 impl Unwind {
     /// Creates a new [`Unwind`].
     pub fn new(pe: PE) -> Self {
-        Unwind { pe: pe }
+        Unwind { pe }
     }
 
     /// Returns all runtime function entries.
