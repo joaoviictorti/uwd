@@ -1,9 +1,9 @@
 [package]
 name = "uwd"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2024"
 description = "Call Stack Spoofing for Rust"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/joaoviictorti/uwd"
 homepage = "https://github.com/joaoviictorti/uwd"
 readme = "README.md"
@@ -18,10 +18,13 @@ include = [
     "LICENSE",
 ]
 
+[lib]
+doctest = false
+
 [dependencies]
 bitfield = "0.19.0"
 obfstr = "0.4.4"
-dinvk = "0.3.1"
+dinvk = "0.4.2"
 anyhow = { version = "1.0.98", default-features = false }
 memchr = { version = "2.7.4", default-features = false }
 

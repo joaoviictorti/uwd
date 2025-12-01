@@ -1,15 +1,60 @@
-// Copyright (c) 2025 joaoviictorti
-// Licensed under the MIT License. See LICENSE file in the project root for details.
-
 #![allow(non_snake_case, non_camel_case_types)]
 
-use core::ffi::c_void;
+use core::{ffi::c_void, slice::from_raw_parts};
+use dinvk::{types::*, helper::PE};
 
 /// Indicates the presence of an exception handler in the function.
 pub const UNW_FLAG_EHANDLER: u8 = 0x1;
 
 /// Indicates chained unwind information is present.
 pub const UNW_FLAG_CHAININFO: u8 = 0x4;
+
+/// Provides access to the unwind (exception handling) information of a PE image.
+#[derive(Debug)]
+pub struct Unwind {
+    /// Reference to the parsed PE image.
+    pub pe: PE,
+}
+
+impl Unwind {
+    /// Creates a new [`Unwind`].
+    pub fn new(pe: PE) -> Self {
+        Unwind { pe: pe }
+    }
+
+    /// Returns all runtime function entries.
+    pub fn entries(&self) -> Option<&[IMAGE_RUNTIME_FUNCTION]> {
+        let nt = self.pe.nt_header()?;
+        let dir = unsafe {
+            (*nt).OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION]
+        };
+
+        if dir.VirtualAddress == 0 || dir.Size == 0 {
+            return None;
+        }
+
+        let addr = (self.pe.base as usize + dir.VirtualAddress as usize) as *const IMAGE_RUNTIME_FUNCTION;
+        let len = dir.Size as usize / size_of::<IMAGE_RUNTIME_FUNCTION>();
+
+        Some(unsafe { from_raw_parts(addr, len) })
+    }
+
+    /// Finds a runtime function by its RVA.
+    pub fn function_by_offset(&self, offset: u32) -> Option<&IMAGE_RUNTIME_FUNCTION> {
+        self.entries()?.iter().find(|f| f.BeginAddress == offset)
+    }
+
+    /// Gets the size in bytes of a function using the unwind table.
+    #[cfg(feature = "desync")]
+    pub fn function_size(&self, func: *mut c_void) -> Option<u64> {
+        let offset = (func as usize - self.pe.base as usize) as u32;
+        let entry = self.function_by_offset(offset)?;
+
+        let start = self.pe.base as u64 + entry.BeginAddress as u64;
+        let end = self.pe.base as u64 + entry.EndAddress as u64;
+        Some(end - start)
+    }
+}
 
 /// Configuration structure passed to the spoof ASM routine.
 #[repr(C)]

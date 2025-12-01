@@ -17,26 +17,6 @@ update:
 publish:
     cargo publish --allow-dirty
 
-# Formats all Rust source files
-fmt:
-    cargo +nightly fmt --check
-
-# Builds local documentation
-docs:
-    cargo doc --no-deps --open
-
-# Run only integration tests in /tests directory
-test:
-    cargo test --test '*' -- --nocapture
-
-# Run a specific example
-example name:
-    cargo run --example {{name}}
-
-# Test this workflow on your machine with `act`
-act:
-    act -P windows-latest=-self-hosted
-
 # Format all .toml files using Taplo
 taplo:
     taplo format

@@ -1,29 +1,20 @@
-// Copyright (c) 2025 joaoviictorti
-// Licensed under the MIT License. See LICENSE file in the project root for details.
-
 use alloc::{string::String, vec::Vec};
 use core::ffi::c_void;
 
 use anyhow::{Context, Result, bail};
 use obfstr::obfstring as s;
-use dinvk::{
-    GetModuleHandle, GetProcAddress,
-    data::IMAGE_RUNTIME_FUNCTION,
-    hash::murmur3,
-    pe::PE
-};
+use dinvk::module::{get_module_address, get_proc_address};
+use dinvk::types::IMAGE_RUNTIME_FUNCTION;
+use dinvk::hash::murmur3;
+use dinvk::helper::PE;
 
-use super::util::*;
-use super::data::{
-    Config, Registers,
-    UNWIND_OP_CODES::{self, *},
-};
-use super::data::{
-    UNW_FLAG_CHAININFO,
-    UNW_FLAG_EHANDLER,
-    UNWIND_CODE,
-    UNWIND_INFO,
-};
+#[cfg(feature = "desync")]
+use crate::util::find_base_thread_return_address;
+use crate::util::{find_gadget, shuffle, find_valid_instruction_offset};
+use crate::types::{Config, Registers, UNWIND_OP_CODES::{self, *}};
+use crate::types::{UNW_FLAG_CHAININFO, UNW_FLAG_EHANDLER};
+use crate::types::{UNWIND_CODE, UNWIND_INFO};
+use crate::types::Unwind;
 
 #[cfg(feature = "desync")]
 unsafe extern "C" {
@@ -37,17 +28,33 @@ unsafe extern "C" {
     fn SpoofSynthetic(config: &mut Config) -> *mut c_void;
 }
 
-/// Invokes the function using a synthetic stack layout.
+/// Invokes a function using a synthetic spoofed call stack.
 ///
-/// # Arguments
+/// # Examples
 ///
-/// * `$addr` - A pointer to the function to spoof-call.
-/// * `$arg` - A list of arguments to be passed to the spoofed function (up to 11 maximum).
+/// ```
+/// use core::ptr;
+/// use dinvk::module::{get_module_address, get_proc_address};
+/// use uwd::spoof;
+///
+/// let kernel32 = get_module_address("kernel32.dll", None);
+/// let virtual_alloc = get_proc_address(kernel32, "VirtualAlloc", None);
+///
+/// let addr = spoof!(
+///     virtual_alloc,
+///     ptr::null_mut::<core::ffi::c_void>(),
+///     1 << 12,
+///     0x3000,
+///     0x04
+/// ).unwrap();
+///
+/// assert!(!addr.is_null());
+/// ```
 #[macro_export]
 macro_rules! spoof {
     ($addr:expr, $($arg:expr),+ $(,)?) => {
         unsafe {
-            $crate::internal::uwd_entry(
+            $crate::__private::spoof(
                 $addr,
                 &[$(::core::mem::transmute($arg as usize)),*],
                 $crate::SpoofKind::Function,
@@ -56,17 +63,34 @@ macro_rules! spoof {
     };
 }
 
-/// Wraps a native Windows syscall with a simulated stack layout.
+/// Invokes a Windows native syscall using a spoofed stack.
 ///
-/// # Arguments
+/// # Examples
+/// 
+/// ```
+/// use core::ptr;
+/// use uwd::{AsPointer, syscall};
 ///
-/// * `$name` - The name of the syscall as a string literal.
-/// * `$arg` - A list of arguments to be passed to the spoofed function (up to 11 maximum)
+/// let mut addr = ptr::null_mut::<core::ffi::c_void>();
+/// let mut size = (1 << 12) as usize;
+///
+/// let status = syscall!(
+///     "NtAllocateVirtualMemory",
+///     -1isize,
+///     addr.as_ptr_mut(),
+///     0,
+///     size.as_ptr_mut(),
+///     0x3000,
+///     0x04
+/// ).unwrap() as i32;
+///
+/// assert_eq!(status, 0);
+/// ```
 #[macro_export]
 macro_rules! syscall {
     ($name:expr, $($arg:expr),* $(,)?) => {
         unsafe {
-            $crate::internal::uwd_entry(
+            $crate::__private::spoof(
                 core::ptr::null_mut(),
                 &[$(::core::mem::transmute($arg as usize)),*],
                 $crate::SpoofKind::Syscall($name),
@@ -75,62 +99,62 @@ macro_rules! syscall {
     };
 }
 
-/// Internal module responsible for executing call stack spoofing.
-pub mod internal {
-    use core::{ffi::c_void, ptr::null_mut};
+#[doc(hidden)]
+pub mod __private {
+    use core::ffi::c_void;
     use super::*;
 
-    /// Performs call stack spoofing in `synthetic` mode, simulating a fake stack from scratch.
+    /// Performs call stack spoofing in `synthetic` mode.
     #[cfg(not(feature = "desync"))]
-    fn spoof(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
-        // Max 11 arguments allowed
+    pub fn spoof(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
+        // Max 11 args
         if args.len() > 11 {
             bail!(s!("too many arguments"));
         }
 
-        // Prevent calling a null function unless it's a syscall
+        // Function pointer must be valid unless syscall spoof
         if let SpoofKind::Function = kind && addr.is_null() {
             bail!(s!("null function address"));
         }
 
-        // Preparing the `Config` structure for spoofing
         let mut config = Config::default();
 
-        // Get the base address of kernelbase.dll
-        let kernelbase = GetModuleHandle(2737729883u32, Some(murmur3));
+        // Resolve kernelbase
+        let kernelbase = get_module_address(2737729883u32, Some(murmur3));
 
-        // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices
-        let pe_kernelbase = PE::parse(kernelbase);
-        let tables = pe_kernelbase.unwind().entries().context(s!(
-            "failed to read IMAGE_RUNTIME_FUNCTION entries from .pdata section"
-        ))?;
+        // Parse unwind table
+        let pe_kernelbase = Unwind::new(PE::parse(kernelbase));
+        let tables = pe_kernelbase
+            .entries()
+            .context(s!(
+                "failed to read IMAGE_RUNTIME_FUNCTION entries from .pdata section"
+            ))?;
 
-        // Preparing addresses to use as artificial frames to emulate thread stack initialization
-        let ntdll = GetModuleHandle(2788516083u32, Some(murmur3));
+        // Resolve APIs
+        let ntdll = get_module_address(2788516083u32, Some(murmur3));
         if ntdll.is_null() {
             bail!(s!("ntdll.dll not found"));
         }
 
-        let kernel32 = GetModuleHandle(2808682670u32, Some(murmur3));
-        let rlt_user_addr = GetProcAddress(ntdll, 1578834099u32, Some(murmur3));
-        let base_thread_addr = GetProcAddress(kernel32, 4083630997u32, Some(murmur3));
+        let kernel32 = get_module_address(2808682670u32, Some(murmur3));
+        let rlt_user_addr = get_proc_address(ntdll, 1578834099u32, Some(murmur3));
+        let base_thread_addr = get_proc_address(kernel32, 4083630997u32, Some(murmur3));
+
         config.rtl_user_addr = rlt_user_addr;
         config.base_thread_addr = base_thread_addr;
 
-        // Recovering the IMAGE_RUNTIME_FUNCTION structure of target apis
-        let pe_ntdll = PE::parse(ntdll);
+        // Unwind lookup
+        let pe_ntdll = Unwind::new(PE::parse(ntdll));
         let rtl_user_runtime = pe_ntdll
-            .unwind()
             .function_by_offset(rlt_user_addr as u32 - ntdll as u32)
             .context(s!("RtlUserThreadStart unwind info not found"))?;
 
-        let pe_kernel32 = PE::parse(kernel32);
+        let pe_kernel32 = Unwind::new(PE::parse(kernel32));
         let base_thread_runtime = pe_kernel32
-            .unwind()
             .function_by_offset(base_thread_addr as u32 - kernel32 as u32)
             .context(s!("BaseThreadInitThunk unwind info not found"))?;
 
-        // Recovering the stack size of target apis
+        // Stack sizes
         let rtl_user_size = ignoring_set_fpreg(ntdll, rtl_user_runtime)
             .context(s!("RtlUserThreadStart stack size not found"))?;
         
@@ -140,14 +164,14 @@ pub mod internal {
         config.rtl_user_thread_size = rtl_user_size as u64;
         config.base_thread_size = base_thread_size as u64;
 
-        // First frame: a normal function with a clean prologue
+        // First prologue
         let first_prolog = Prolog::find_prolog(kernelbase, tables)
             .context(s!("first prolog not found"))?;
         
         config.first_frame_fp = (first_prolog.frame + first_prolog.offset as u64) as *const c_void;
         config.first_frame_size = first_prolog.stack_size as u64;
 
-        // Second frame: looks specifically for a prologue with `push rbp`
+        // Second prologue
         let second_prolog = Prolog::find_push_rbp(kernelbase, tables)
             .context(s!("second prolog not found"))?;
         
@@ -155,23 +179,24 @@ pub mod internal {
         config.second_frame_size = second_prolog.stack_size as u64;
         config.rbp_stack_offset = second_prolog.rbp_offset as u64;
 
-        // Find a gadget `add rsp, 0x58; ret`
+        // Gadget: `add rsp, 0x58; ret`
         let (add_rsp_addr, size) = find_gadget(kernelbase, &[0x48, 0x83, 0xC4, 0x58, 0xC3], tables)
             .context(s!("add rsp gadget not found"))?;
         
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
-        // Find a gadget that performs `jmp rbx` - to restore the original call
+        // Gadget: `jmp rbx`
         let (jmp_rbx_addr, size) = find_gadget(kernelbase, &[0xFF, 0x23], tables)
             .context(s!("jmp rbx gadget not found"))?;
         
         config.jmp_rbx_gadget = jmp_rbx_addr as *const c_void;
         config.jmp_rbx_frame_size = size as u64;
 
-        // Preparing arguments
+        // Prepare arguments
         let len = args.len();
         config.number_args = len as u32;
+        
         for (i, &arg) in args.iter().take(len).enumerate() {
             match i {
                 0 => config.arg01 = arg,
@@ -189,22 +214,15 @@ pub mod internal {
             }
         }
 
-        // Spoof kind handling
+        // Handle syscall spoofing
         match kind {
-            // Executes a function that is not syscall
-            SpoofKind::Function => {
-                config.spoof_function = addr;
-            }
-
-            // Executes a syscall indirectly
+            SpoofKind::Function => config.spoof_function = addr,
             SpoofKind::Syscall(name) => {
-                // Retrieves the address of the function
-                let addr = GetProcAddress(ntdll, name, None);
+                let addr = get_proc_address(ntdll, name, None);
                 if addr.is_null() {
-                    bail!(s!("GetProcAddress returned null"));
+                    bail!(s!("get_proc_address returned null"));
                 }
 
-                // Configures the parameters to be sent to execute the syscall indirectly
                 config.is_syscall = true as u32;
                 config.ssn = dinvk::ssn(name, ntdll).context(s!("ssn not found"))?;
                 config.spoof_function = dinvk::get_syscall_address(addr)
@@ -212,47 +230,47 @@ pub mod internal {
             }
         }
 
-        // Call the external spoofing routine
         Ok(unsafe { SpoofSynthetic(&mut config) })
     }
 
-    /// Performs call stack spoofing in `desync` mode, reusing the thread's real stack.
+    /// Performs call stack spoofing in `desync` mode.
     #[cfg(feature = "desync")]
-    fn spoof(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
-        // Max 11 arguments allowed
+    pub fn spoof(addr: *mut c_void, args: &[*const c_void], kind: SpoofKind) -> Result<*mut c_void> {
+        // Max 11 args
         if args.len() > 11 {
             bail!(s!("too many arguments"));
         }
 
-        // Prevent calling a null function unless it's a syscall
+        // Function pointer must be valid unless syscall spoof
         if let SpoofKind::Function = kind && addr.is_null() {
             bail!(s!("null function address"));
         }
 
-        // Preparing the `Config` structure for spoofing
         let mut config = Config::default();
 
-        // Get the base address of kernelbase.dll
-        let kernelbase = GetModuleHandle(2737729883u32, Some(murmur3));
+        // Resolve kernelbase
+        let kernelbase = get_module_address(2737729883u32, Some(murmur3));
 
-        // Parse the IMAGE_RUNTIME_FUNCTION table into usable Rust slices
-        let pe = PE::parse(kernelbase);
-        let tables = pe.unwind().entries().context(s!(
-            "failed to read IMAGE_RUNTIME_FUNCTION entries from .pdata section"
-        ))?;
+        // Parse unwind table
+        let pe = Unwind::new(PE::parse(kernelbase));
+        let tables = pe
+            .entries()
+            .context(s!(
+                "failed to read IMAGE_RUNTIME_FUNCTION entries from .pdata section"
+            ))?;
 
         // Locate a return address from BaseThreadInitThunk on the current stack
         config.return_address = find_base_thread_return_address()
             .context(s!("return address not found"))? as *const c_void;
 
-        // First frame: a normal function with a clean prologue
+        // First prologue
         let first_prolog = Prolog::find_prolog(kernelbase, tables)
             .context(s!("first prolog not found"))?;
         
         config.first_frame_fp = (first_prolog.frame + first_prolog.offset as u64) as *const c_void;
         config.first_frame_size = first_prolog.stack_size as u64;
 
-        // Second frame: looks specifically for a prologue with `push rbp`
+        // Second prologue
         let second_prolog = Prolog::find_push_rbp(kernelbase, tables)
             .context(s!("second prolog not found"))?;
         
@@ -260,23 +278,24 @@ pub mod internal {
         config.second_frame_size = second_prolog.stack_size as u64;
         config.rbp_stack_offset = second_prolog.rbp_offset as u64;
 
-        // Find a gadget `add rsp, 0x58; ret`
+        // Gadget: `add rsp, 0x58; ret`
         let (add_rsp_addr, size) = find_gadget(kernelbase, &[0x48, 0x83, 0xC4, 0x58, 0xC3], tables)
             .context(s!("add rsp gadget not found"))?;
 
         config.add_rsp_gadget = add_rsp_addr as *const c_void;
         config.add_rsp_frame_size = size as u64;
 
-        // Find a gadget that performs `jmp rbx` - to restore the original call
+        // Gadget: `jmp rbx`
         let (jmp_rbx_addr, size) = find_gadget(kernelbase, &[0xFF, 0x23], tables)
             .context(s!("jmp rbx gadget not found"))?;
 
         config.jmp_rbx_gadget = jmp_rbx_addr as *const c_void;
         config.jmp_rbx_frame_size = size as u64;
 
-        // Preparing arguments
+        // Prepare arguments
         let len = args.len();
         config.number_args = len as u32;
+        
         for (i, &arg) in args.iter().take(len).enumerate() {
             match i {
                 0 => config.arg01 = arg,
@@ -294,28 +313,20 @@ pub mod internal {
             }
         }
 
-        // Spoof kind handling
+        // Handle syscall spoofing
         match kind {
-            // Executes a function that is not syscall
-            SpoofKind::Function => {
-                config.spoof_function = addr;
-            }
-
-            // Executes a syscall indirectly
+            SpoofKind::Function => config.spoof_function = addr,
             SpoofKind::Syscall(name) => {
-                // Retrieves the ntdll address
-                let ntdll = GetModuleHandle(2788516083u32, Some(murmur3));
+                let ntdll = get_module_address(2788516083u32, Some(murmur3));
                 if ntdll.is_null() {
                     bail!(s!("ntdll.dll not found"));
                 }
 
-                // Retrieves the address of the function
-                let addr = GetProcAddress(ntdll, name, None);
+                let addr = get_proc_address(ntdll, name, None);
                 if addr.is_null() {
-                    bail!(s!("GetProcAddress returned null"));
+                    bail!(s!("get_proc_address returned null"));
                 }
 
-                // Configures the parameters to be sent to execute the syscall indirectly
                 config.is_syscall = true as u32;
                 config.ssn = dinvk::ssn(name, ntdll).context(s!("ssn not found"))?;
                 config.spoof_function = dinvk::get_syscall_address(addr)
@@ -323,68 +334,32 @@ pub mod internal {
             }
         }
 
-        // Call the external spoofing routine
         Ok(unsafe { Spoof(&mut config) })
-    }
-
-    /// Launches a spoofed execution using either desynchronized or synthetic stack spoofing.
-    ///
-    /// # Arguments
-    ///
-    /// * `addr` - Target function pointer. Can be `null` if `kind` is `SpoofKind::Syscall`.
-    /// * `args` - Up to 11 arguments that will be passed to the target, cast as `*const c_void`.
-    /// * `kind` - The spoofing mode:
-    ///     - [`SpoofKind::Function`]: Directly call a function using the spoofed call stack.
-    ///     - [`SpoofKind::Syscall`]: Resolve and invoke a Windows syscall via its shadow stub.
-    ///
-    /// # Returns
-    ///
-    /// The raw return value of the spoofed call, or an error if spoofing fails.
-    #[inline(always)]
-    pub fn uwd_entry(
-        addr: *mut c_void, 
-        args: &[*const c_void],
-        kind: SpoofKind<'_>,  
-    ) -> Result<*mut c_void> {
-        match kind {
-            SpoofKind::Function => {
-                spoof(addr, args, SpoofKind::Function)
-            }
-            SpoofKind::Syscall(name) => {
-                spoof(null_mut(), args, SpoofKind::Syscall(name))
-            }
-        }
     }
 }
 
-/// Represents metadata extracted from a function's prologue used for call stack spoofing.
-#[derive(Copy, Clone)]
+/// Metadata extracted from a function prologue that is suitable for spoofing.
+#[derive(Copy, Clone, Default)]
 struct Prolog {
-    /// Address of the function's entry point or relevant instruction.
+    /// Address of the selected function frame.
     frame: u64,
 
     /// Total stack space reserved by the function.
     stack_size: u32,
 
-    /// Offset inside the function where a specific instruction pattern is found.
+    /// Offset inside the function where a valid instruction pattern was found.
     offset: u32,
 
-    /// Offset in the stack where `rbp` is pushed.
+    /// Offset in the stack where `rbp` is pushed or saved.
     rbp_offset: u32,
 }
 
 impl Prolog {
-    /// Scans the `RUNTIME_FUNCTION` table to locate the first function with a prologue
-    /// considered safe and predictable for call stack spoofing.
+    /// Finds the first prologue in the unwind table that looks safe for spoofing.
     ///
-    /// # Arguments
-    ///
-    /// * `module_base` - Base address of the module being analyzed.
-    /// * `runtime_table` - Slice containing the exception directory entries.
-    ///
-    /// # Returns
-    ///
-    /// Metadata of the first suitable prologue, or `None` if no suitable prologue is found.
+    /// This scans the RUNTIME_FUNCTION entries for a function that:
+    /// - Allocates a stack frame.
+    /// - Has a predictable prologue layout.
     fn find_prolog(module_base: *mut c_void, runtime_table: &[IMAGE_RUNTIME_FUNCTION]) -> Option<Self> {
         let mut prologs = runtime_table
             .iter()
@@ -400,35 +375,25 @@ impl Prolog {
                     frame,
                     stack_size,
                     offset,
-                    rbp_offset: 0,
+                    ..Default::default()
                 })
             })
             .collect::<Vec<Self>>();
 
-        // No prologue found? return None
         if prologs.is_empty() {
             return None;
         }
 
-        // Randomizes the order of possible frames found (if there is more than one),
-        // helps to shuffle patterns and reduce repetition-based heuristics
+        // Shuffle to reduce pattern predictability.
         shuffle(&mut prologs);
 
-        // Take the first occurrence
         prologs.first().copied()
     }
 
-    /// Searches for the first function in the exception directory that contains a classic
-    /// `push rbp` prologue, which is typically associated with frame pointer-based stack frames.
+    /// Finds a prologue that uses `push rbp` and an RBP-based frame.
     ///
-    /// # Arguments
-    ///
-    /// * `module_base` - Base address of the loaded module.
-    /// * `runtime_table` - Slice of entries from the exception directory.
-    ///
-    /// # Returns
-    ///
-    /// The prologue metadata if a valid `push rbp` function is found, or `None` if no suitable match exists.
+    /// This is useful when spoofing techniques rely on classic frame-pointer
+    /// based layouts rather than purely RSP-based stack frames.
     fn find_push_rbp(module_base: *mut c_void, runtime_table: &[IMAGE_RUNTIME_FUNCTION]) -> Option<Self> {
         let mut prologs = runtime_table
             .iter()
@@ -451,33 +416,26 @@ impl Prolog {
             })
             .collect::<Vec<Self>>();
 
-        // No prologue found? return None
         if prologs.is_empty() {
             return None;
         }
 
-        // The first pop rbp frame is not suitable on most windows versions
+        // The first frame is often not suitable on many Windows versions.
         prologs.remove(0);
 
-        // Randomizes the order of possible frames found (if there is more than one),
-        // helps to shuffle patterns and reduce repetition-based heuristics
+        // Shuffle to reduce pattern predictability.
         shuffle(&mut prologs);
 
-        // Take the first occurrence
         prologs.first().copied()
     }
 }
 
-/// Checks if the `RBP` register is pushed or saved on the stack in a spoofable manner.
+/// Determines whether RBP is pushed or saved in a spoof-compatible manner and
+/// computes the total stack size for a function.
 ///
-/// # Arguments
-///
-/// * `module` - Base address of the loaded module.
-/// * `runtime` - A reference to the function's `IMAGE_RUNTIME_FUNCTION`.
-///
-/// # Returns
-///
-/// Tuple with the RBP offset and the total stack size.
+/// This inspects the unwind codes associated with the `IMAGE_RUNTIME_FUNCTION`
+/// entry to determine if the function frame uses a layout suitable for
+/// call stack spoofing.
 pub fn rbp_offset(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<(u32, u32)> {
     unsafe {
         let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
@@ -643,16 +601,9 @@ pub fn rbp_offset(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Opti
     }
 }
 
-/// Calculates the stack size of a function and checks if it uses `RBP` as frame pointer.
+/// Computes stack frame metadata while rejecting `setfp` frames.
 ///
-/// # Arguments
-///
-/// * `module` - Base address of the loaded module.
-/// * `runtime` - A reference to the function's `IMAGE_RUNTIME_FUNCTION`.
-///
-/// # Returns
-///
-/// A flag indicating RBP usage and the total stack size.
+/// Used when locating suitable prologues for spoofed call frames.
 pub fn stack_frame(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<(bool, u32)> {
     unsafe {
         let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
@@ -805,18 +756,8 @@ pub fn stack_frame(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Opt
     }
 }
 
-/// Calculates the total stack frame size of a function, ignoring `setfp` frames.
-///
-/// Rejects any function that uses `UWOP_SET_FPREG` or manipulates `RSP` directly.
-///
-/// # Arguments
-///
-/// * `module` - Base address of the loaded module.
-/// * `runtime` - A reference to the function's `IMAGE_RUNTIME_FUNCTION`.
-///
-/// # Returns
-///
-/// Total stack size in bytes for a spoof‑safe frame.
+/// Computes the total stack frame size of a function while ignoring any `setfp` frames. 
+/// Useful for identifying spoof-compatible RUNTIME_FUNCTION entries.
 pub fn ignoring_set_fpreg(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<u32> {
     unsafe {
         let unwind_info = (module as usize + runtime.UnwindData as usize) as *mut UNWIND_INFO;
@@ -952,12 +893,13 @@ pub fn ignoring_set_fpreg(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION)
     }
 }
 
-/// Trait for casting references to raw `c_void` pointers.
+/// Trait for safely converting any reference or mutable reference into a raw
+/// pointer usable in spoofing routines.
 pub trait AsPointer {
-    /// Returns a raw immutable pointer to `self` as `*const c_void`.
+    /// Returns a raw immutable pointer to `self`.
     fn as_ptr_const(&self) -> *const c_void;
 
-    /// Returns a raw mutable pointer to `self` as `*mut c_void`.
+    /// Returns a raw mutable pointer to `self`.
     fn as_ptr_mut(&mut self) -> *mut c_void;
 }
 
@@ -973,11 +915,38 @@ impl<T> AsPointer for T {
     }
 }
 
-/// Specifies the type of spoof being performed
+/// Specifies the spoofing mode used by the engine.
 pub enum SpoofKind<'a> {
-    /// Spoofs a call to a regular function pointer.
+    /// Spoofs a direct function call.
     Function,
 
-    /// Spoofs a native system call using its name.
+    /// Spoofs a syscall using its name.
     Syscall(&'a str),
+}
+
+#[cfg(test)]
+mod tests {
+    use core::ptr;
+    use alloc::boxed::Box;
+    use super::*;
+
+    #[test]
+    fn test_spoof() -> Result<(), Box<dyn core::error::Error>> {
+        let kernel32 = get_module_address("kernel32.dll", None);
+        let virtual_alloc = get_proc_address(kernel32, "VirtualAlloc", None);   
+        let addr = spoof!(virtual_alloc, ptr::null_mut::<c_void>(), 1 << 12, 0x3000, 0x04)?;
+        assert_ne!(addr, ptr::null_mut());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_syscall() -> Result<(), Box<dyn core::error::Error>> {
+        let mut addr = ptr::null_mut::<c_void>();
+        let mut size = (1 << 12) as usize;
+        let status = syscall!("NtAllocateVirtualMemory", -1isize, addr.as_ptr_mut(), 0, size.as_ptr_mut(), 0x3000, 0x04)? as i32;
+        assert_eq!(status, 0);
+
+        Ok(())
+    }
 }

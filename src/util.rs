@@ -1,31 +1,24 @@
-// Copyright (c) 2025 joaoviictorti
-// Licensed under the MIT License. See LICENSE file in the project root for details.
-
 use core::{ffi::c_void, slice::from_raw_parts};
 use alloc::vec::Vec;
 
 use obfstr::obfbytes as b;
-use dinvk::data::IMAGE_RUNTIME_FUNCTION;
+use dinvk::types::IMAGE_RUNTIME_FUNCTION;
 
-use super::ignoring_set_fpreg;
+use crate::ignoring_set_fpreg;
 
-/// Searches for a specific instruction pattern inside a function's code region,
-/// returning the relative offset from the function's start if found.
+/// Searches for a valid instruction offset in a function.
 ///
-/// # Arguments
-///
-/// * `module` - Base address of the module containing the target function.
-/// * `runtime` - A reference to the IMAGE_RUNTIME_FUNCTION describing the function.
-///
-/// # Returns
-///
-/// The relative offset inside the function where the gadget was found.
+/// This scans the function's code region for a `call qword ptr [rip+0]`
+/// instruction sequence and returns the offset *after* the instruction.
 ///
 /// # Notes
 ///
-/// The pattern being searched is a `call qword ptr [rip+0]`, encoded as `48 FF 15 00 00 00 00`,
-/// and the function returns the offset *after* the full instruction (+7).
-pub fn find_valid_instruction_offset(module: *mut c_void, runtime: &IMAGE_RUNTIME_FUNCTION) -> Option<u32> {
+/// The searched gadget pattern is `48 FF 15 00 00 00 00`, and the
+/// returned value is `match_offset + 7`.
+pub fn find_valid_instruction_offset(
+    module: *mut c_void,
+    runtime: &IMAGE_RUNTIME_FUNCTION,
+) -> Option<u32> {
     let start = module as u64 + runtime.BeginAddress as u64;
     let end = module as u64 + runtime.EndAddress as u64;
     let size = end - start;
@@ -43,18 +36,8 @@ pub fn find_valid_instruction_offset(module: *mut c_void, runtime: &IMAGE_RUNTIM
     None
 }
 
-/// Scans the memory of a module for a specific byte pattern, constrained to
-/// valid runtime functions with corresponding unwind info.
-///
-/// # Arguments
-///
-/// * `module` - Base address of the loaded module to scan.
-/// * `pattern` - Byte sequence representing the target gadget.
-/// * `runtime_table` - Slice of `IMAGE_RUNTIME_FUNCTION` entries describing the module's valid code ranges.
-///
-/// # Returns
-///
-/// Pointer to the start of the matching gadget and the associated stack frame size.
+/// Scans the code of a module for a given byte pattern, restricted to valid
+/// RUNTIME_FUNCTION regions.
 pub fn find_gadget(
     module: *mut c_void, 
     pattern: &[u8], 
@@ -82,50 +65,44 @@ pub fn find_gadget(
             })
             .collect::<Vec<(*mut u8, u32)>>();
 
-        // No gadget found? return None
         if gadgets.is_empty() {
             return None;
         }
 
-        // Randomizes the order of possible frames found (if there is more than one),
-        // helps to shuffle patterns and reduce repetition-based heuristics
+        // Shuffle to reduce pattern predictability.
         shuffle(&mut gadgets);
 
-        // Take the first occurrence
         gadgets.first().copied()
     }
 }
 
 /// Scans the current thread's stack to locate the return address that falls within
 /// the range of the `BaseThreadInitThunk` function from `kernel32.dll`.
-///
-/// # Returns
-///
-/// The stack address (`RSP`) where a return to `BaseThreadInitThunk` was found.
 #[cfg(feature = "desync")]
 pub fn find_base_thread_return_address() -> Option<usize> {
-    use dinvk::{GetModuleHandle, GetProcAddress};
-    use dinvk::{hash::{jenkins3, murmur3}, pe::PE};
+    use dinvk::module::{get_module_address, get_proc_address};
+    use dinvk::{hash::{jenkins3, murmur3}, helper::PE};
+    use crate::types::Unwind;
 
     unsafe {
         // Get handle for kernel32.dll
-        let kernel32 = GetModuleHandle(2808682670u32, Some(murmur3));
+        let kernel32 = get_module_address(2808682670u32, Some(murmur3));
         if kernel32.is_null() {
             return None;
         }
 
         // Resolves the address of the BaseThreadInitThunk function
-        let base_thread = GetProcAddress(kernel32, 4073232152u32, Some(jenkins3));
+        let base_thread = get_proc_address(kernel32, 4073232152u32, Some(jenkins3));
         if base_thread.is_null() {
             return None;
         }
 
         // Calculate the size of the BaseThreadInitThunk function
-        let pe_kernel32 = PE::parse(kernel32);
-        let size = pe_kernel32.unwind().function_size(base_thread)? as usize;
+        let pe_kernel32 = Unwind::new(PE::parse(kernel32));
+        let size = pe_kernel32.function_size(base_thread)? as usize;
 
         // Access the TEB and stack limits
-        let teb = dinvk::NtCurrentTeb();
+        let teb = dinvk::winapis::NtCurrentTeb();
         let stack_base = (*teb).Reserved1[1] as usize;
         let stack_limit = (*teb).Reserved1[2] as usize;
 
@@ -147,14 +124,7 @@ pub fn find_base_thread_return_address() -> Option<usize> {
     }
 }
 
-/// Randomly shuffles the elements of a mutable slice in-place using a pseudo-random
-/// number generator seeded by the CPU's timestamp counter (`rdtsc`).
-///
-/// The shuffling algorithm is a variant of the Fisher-Yates shuffle.
-///
-/// # Arguments
-/// 
-/// * `list` - A mutable slice of elements to be shuffled.
+/// Randomly shuffles the elements of a list in place.
 pub fn shuffle<T>(list: &mut [T]) {
     let mut seed = unsafe { core::arch::x86_64::_rdtsc() };
     for i in (1..list.len()).rev() {

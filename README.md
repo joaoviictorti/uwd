@@ -1,14 +1,12 @@
-# uwd 🦀
+# uwd
 
 ![Rust](https://img.shields.io/badge/made%20with-Rust-red)
 ![crate](https://img.shields.io/crates/v/uwd.svg)
 ![docs](https://docs.rs/uwd/badge.svg)
-[![build](https://github.com/joaoviictorti/uwd/actions/workflows/ci.yml/badge.svg)](https://github.com/joaoviictorti/uwd/actions/workflows/ci.yml)
-![Forks](https://img.shields.io/github/forks/joaoviictorti/uwd)
-![Stars](https://img.shields.io/github/stars/joaoviictorti/uwd)
-![License](https://img.shields.io/github/license/joaoviictorti/uwd)
+![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-brightgreen)
+[![Actions status](https://github.com/joaoviictorti/uwd/actions/workflows/ci.yml/badge.svg)](https://github.com/joaoviictorti/uwd/actions)
 
-`uwd` is a Rust library for call stack spoofing on Windows, allowing you to execute arbitrary functions with a forged call stack that evades analysis, logging, or detection during stack unwinding.
+Rust library for call stack spoofing on Windows, allowing you to execute arbitrary functions with a forged call stack that evades analysis, logging, or detection during stack unwinding.
 
 Inspired by [SilentMoonwalk](https://github.com/klezVirus/SilentMoonwalk), this crate brings low-level spoofing capabilities into a clean, idiomatic Rust interface with full support for `#[no_std]`, `MSVC` and `GNU` toolchains, and automated gadget resolution.
 
@@ -42,12 +40,12 @@ You can spoof:
 This example shows how to spawn `calc.exe` using a spoofed call stack. We call `WinExec` twice once using the Desync technique, and again using the Synthetic one.
 
 ```rust
-use dinvk::{GetModuleHandle, GetProcAddress};
+use dinvk::module::{get_module_address, get_proc_address};
 use uwd::spoof;
 
 // Resolves addresses of the WinAPI functions to be used
-let kernel32 = GetModuleHandle("kernel32.dll", None);
-let win_exec = GetProcAddress(kernel32, "WinExec", None);
+let kernel32 = get_module_address("kernel32.dll", None);
+let win_exec = get_proc_address(kernel32, "WinExec", None);
 
 // Execute command with `WinExec`
 let cmd = c"calc.exe";
@@ -64,7 +62,7 @@ This example performs a indirect system call to `NtAllocateVirtualMemory` with a
 
 ```rust
 use std::{ffi::c_void, ptr::null_mut};
-use dinvk::NT_SUCCESS;
+use dinvk::winapis::NT_SUCCESS;
 use uwd::{syscall, AsPointer};
 
 // Running indirect syscall with Call Stack Spoofing
@@ -78,10 +76,6 @@ if !NT_SUCCESS(status) {
 
 println!("[+] Address allocated: {:?}", addr);
 ```
-
-## Additional Resources
-
-For more examples, check the [examples](https://github.com/joaoviictorti/uwd/tree/main/examples) folder in the repository.
 
 ## References
 
@@ -99,4 +93,14 @@ Special thanks to:
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](https://github.com/joaoviictorti/uwd/tree/main/LICENSE) file for details.
+uwd is licensed under either of
+
+- Apache License, Version 2.0, ([LICENSE-APACHE](https://github.com/joaoviictorti/uwd/tree/main/LICENSE-APACHE) or
+  <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](https://github.com/joaoviictorti/uwd/tree/main/LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in uwd
+by you, as defined in the Apache-2.0 license, shall be dually licensed as above, without any
+additional terms or conditions.
