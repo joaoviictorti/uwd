@@ -195,7 +195,7 @@ pub mod __private {
 
         // Prepare arguments
         let len = args.len();
-        config.number_args = len as u32;
+        config.number_args = len as u64;
         
         for (i, &arg) in args.iter().take(len).enumerate() {
             match i {
@@ -224,7 +224,7 @@ pub mod __private {
                 }
 
                 config.is_syscall = true as u32;
-                config.ssn = dinvk::ssn(name, ntdll).context(s!("ssn not found"))?;
+                config.ssn = dinvk::ssn(name, ntdll).context(s!("ssn not found"))?.into();
                 config.spoof_function = dinvk::get_syscall_address(addr)
                     .context(s!("syscall address not found"))? as *const c_void;
             }
@@ -294,7 +294,7 @@ pub mod __private {
 
         // Prepare arguments
         let len = args.len();
-        config.number_args = len as u32;
+        config.number_args = len as u64;
         
         for (i, &arg) in args.iter().take(len).enumerate() {
             match i {
@@ -328,7 +328,7 @@ pub mod __private {
                 }
 
                 config.is_syscall = true as u32;
-                config.ssn = dinvk::ssn(name, ntdll).context(s!("ssn not found"))?;
+                config.ssn = dinvk::ssn(name, ntdll).context(s!("ssn not found"))?.into();
                 config.spoof_function = dinvk::get_syscall_address(addr)
                     .context(s!("syscall address not found"))? as *const c_void;
             }
