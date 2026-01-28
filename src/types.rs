@@ -109,10 +109,10 @@ pub struct Config {
     pub is_syscall: u32,
 
     /// System Service Number (SSN)
-    pub ssn: u16,
+    pub ssn: u32,
 
     /// Arguments that will be passed to the function that will be spoofed
-    pub number_args: u32,
+    pub number_args: u64,
     pub arg01: *const c_void,
     pub arg02: *const c_void,
     pub arg03: *const c_void,
